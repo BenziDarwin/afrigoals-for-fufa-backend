@@ -1,0 +1,228 @@
+// services/analysis_events.go
+package services
+
+import (
+	"errors"
+	"strconv"
+	"time"
+
+	"afrigoals.com/database"
+	"afrigoals.com/middleware"
+	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
+)
+
+type AnalysisEvent struct {
+	ID               uint       `gorm:"primaryKey" json:"id"`
+	MatchID          uint       `gorm:"index;not null" json:"match_id"`
+	VideoID          *uint      `gorm:"index" json:"video_id,omitempty"`
+	Type             string     `gorm:"size:50;index;not null" json:"type"`
+	TimestampSeconds float64    `gorm:"not null" json:"timestamp_seconds"`
+	PlayerID         *uint      `gorm:"index" json:"player_id,omitempty"`
+	PlayerName       *string    `gorm:"size:120" json:"player_name,omitempty"`
+	CreatedBy        uint       `gorm:"index;not null" json:"created_by"`
+	ClipURL          *string    `gorm:"size:500" json:"clip_url,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+func (AnalysisEvent) TableName() string {
+	return "analysis_events"
+}
+
+func ListAnalysisEvents(c *fiber.Ctx) error {
+	matchID := c.Params("match_id")
+
+	var events []AnalysisEvent
+	if err := database.DB.
+		Where("match_id = ?", matchID).
+		Order("timestamp_seconds ASC").
+		Find(&events).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "Failed to list analysis events",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"events": events,
+			"count":  len(events),
+		},
+	})
+}
+
+func GetAnalysisEventByID(c *fiber.Ctx) error {
+	matchID := c.Params("match_id")
+	eventID := c.Params("id")
+
+	var event AnalysisEvent
+	if err := database.DB.
+		Where("match_id = ? AND id = ?", matchID, eventID).
+		First(&event).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"success": false,
+				"error":   "Analysis event not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "Database error",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"event": event,
+		},
+	})
+}
+
+func CreateAnalysisEvent(c *fiber.Ctx) error {
+	user, err := middleware.GetUserFromContext(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Unauthorized",
+		})
+	}
+
+	matchID := c.Params("match_id")
+	matchIDUint, _ := strconv.ParseUint(matchID, 10, 32)
+
+	var req struct {
+		VideoID          *uint   `json:"video_id"`
+		Type             string  `json:"type"`
+		TimestampSeconds float64 `json:"timestamp_seconds"`
+		PlayerID         *uint   `json:"player_id"`
+		PlayerName       *string `json:"player_name"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid request body",
+		})
+	}
+
+	if req.Type == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Event type is required",
+		})
+	}
+
+	// Set default player name if not provided
+	playerName := "Team Event"
+	if req.PlayerName != nil && *req.PlayerName != "" {
+		playerName = *req.PlayerName
+	}
+
+	event := AnalysisEvent{
+		MatchID:          uint(matchIDUint),
+		VideoID:          req.VideoID,
+		Type:             req.Type,
+		TimestampSeconds: req.TimestampSeconds,
+		PlayerID:         req.PlayerID,
+		PlayerName:       &playerName,
+		CreatedBy:        user.ID,
+	}
+
+	if err := database.DB.Create(&event).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to create analysis event",
+		})
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"event": event,
+		},
+	})
+}
+
+func UpdateAnalysisEvent(c *fiber.Ctx) error {
+	matchID := c.Params("match_id")
+	eventID := c.Params("id")
+
+	var event AnalysisEvent
+	if err := database.DB.
+		Where("match_id = ? AND id = ?", matchID, eventID).
+		First(&event).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "Analysis event not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Database error",
+		})
+	}
+
+	var req struct {
+		Type             *string  `json:"type"`
+		TimestampSeconds *float64 `json:"timestamp_seconds"`
+		PlayerID         *uint    `json:"player_id"`
+		PlayerName       *string  `json:"player_name"`
+		ClipURL          *string  `json:"clip_url"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid request body",
+		})
+	}
+
+	if req.Type != nil {
+		event.Type = *req.Type
+	}
+	if req.TimestampSeconds != nil {
+		event.TimestampSeconds = *req.TimestampSeconds
+	}
+	if req.PlayerID != nil {
+		event.PlayerID = req.PlayerID
+	}
+	if req.PlayerName != nil {
+		event.PlayerName = req.PlayerName
+	}
+	if req.ClipURL != nil {
+		event.ClipURL = req.ClipURL
+	}
+
+	if err := database.DB.Save(&event).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to update analysis event",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"event": event,
+		},
+	})
+}
+
+func DeleteAnalysisEvent(c *fiber.Ctx) error {
+	matchID := c.Params("match_id")
+	eventID := c.Params("id")
+
+	result := database.DB.Where("match_id = ? AND id = ?", matchID, eventID).Delete(&AnalysisEvent{})
+	if result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to delete analysis event",
+		})
+	}
+
+	if result.RowsAffected == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "Analysis event not found",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Analysis event deleted",
+	})
+}
