@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 
 	"afrigoals.com/models"
 	"gorm.io/driver/postgres"
@@ -53,14 +55,16 @@ func ConnectDB() *gorm.DB {
 	// development only: it adds columns but never drops or renames them, and it
 	// leaves no record of what changed, so it must not run against a deployed
 	// database.
-	if getEnv("AUTO_MIGRATE", nil) != "true" {
+	autoMigrate, _ := strconv.ParseBool(strings.TrimSpace(getEnv("AUTO_MIGRATE", nil)))
+	if !autoMigrate {
+		log.Println("AutoMigrate disabled; schema is managed by migrations/")
 		return DB
 	}
 
-	log.Println("WARNING: AUTO_MIGRATE=true, the schema may be altered on boot")
+	log.Println("WARNING: AUTO_MIGRATE is enabled, the schema may be altered on boot")
 
-	// Ordered so that a referenced table is always created before the table
-	// that references it.
+	// GORM resolves the creation order from the declared relationships, so this
+	// list is grouped for readability rather than dependency-ordered.
 	err = DB.AutoMigrate(
 		// Base tables
 		&models.League{}, // no FK
@@ -76,6 +80,11 @@ func ConnectDB() *gorm.DB {
 		&models.Substitute{},        // FK to Formation & Player
 		&models.UnavailablePlayer{}, // FK to Formation & Player
 		&models.MatchEvent{},        // FK to Match (and optionally Player & Club)
+
+		// The match_analysts join table is created by Match.Analysts (many2many),
+		// which only produces (match_id, user_id). MatchAnalyst adds the
+		// assigned_at / assigned_by / notes columns that match_analyst.go writes.
+		&models.MatchAnalyst{},
 
 		// Content
 		&models.Article{},    // FK to User (author)

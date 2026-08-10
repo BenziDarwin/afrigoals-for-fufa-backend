@@ -14,6 +14,12 @@ type AnalysisEvent struct {
 
 	// Match and video references. VideoID is optional: an analyst may tag
 	// events before a video has been attached to the match.
+	//
+	// VideoID holds a videos.id, which is what ListMatchVideos returns and what
+	// CutClipByWindow resolves against. It is deliberately not declared as an
+	// association: the older model pointed it at MatchVideo, and since videos
+	// and match_videos are separate tables with separate id sequences, a foreign
+	// key in either direction would reject ids the API itself hands out.
 	MatchID uint  `gorm:"not null;index" json:"match_id"`
 	VideoID *uint `gorm:"index" json:"video_id,omitempty"`
 
@@ -45,9 +51,8 @@ type AnalysisEvent struct {
 	UpdatedAt time.Time `json:"updated_at"`
 
 	// Relationships
-	Match  *Match      `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
-	Video  *MatchVideo `gorm:"foreignKey:VideoID;constraint:OnDelete:CASCADE" json:"video,omitempty"`
-	Player *Player     `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
+	Match  *Match  `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
+	Player *Player `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
 }
 
 // TableName specifies the table name for GORM

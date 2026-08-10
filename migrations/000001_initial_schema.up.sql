@@ -337,7 +337,10 @@ ALTER SEQUENCE public.lineup_players_id_seq OWNED BY public.lineup_players.id;
 
 CREATE TABLE public.match_analysts (
     match_id bigint NOT NULL,
-    user_id bigint NOT NULL
+    user_id bigint NOT NULL,
+    assigned_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    assigned_by bigint,
+    notes text
 );
 
 --
@@ -1394,13 +1397,6 @@ ALTER TABLE ONLY public.analysis_events
     ADD CONSTRAINT fk_analysis_events_player FOREIGN KEY (player_id) REFERENCES public.players(id);
 
 --
--- Name: analysis_events fk_analysis_events_video; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.analysis_events
-    ADD CONSTRAINT fk_analysis_events_video FOREIGN KEY (video_id) REFERENCES public.match_videos(id) ON DELETE CASCADE;
-
---
 -- Name: article_tags fk_articles_tags; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1455,20 +1451,6 @@ ALTER TABLE ONLY public.unavailable_players
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT fk_leagues_users FOREIGN KEY (league_id) REFERENCES public.leagues(id);
-
---
--- Name: match_analysts fk_match_analysts_match; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.match_analysts
-    ADD CONSTRAINT fk_match_analysts_match FOREIGN KEY (match_id) REFERENCES public.matches(id);
-
---
--- Name: match_analysts fk_match_analysts_user; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.match_analysts
-    ADD CONSTRAINT fk_match_analysts_user FOREIGN KEY (user_id) REFERENCES public.users(id);
 
 --
 -- Name: match_videos fk_match_videos_match; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -1528,4 +1510,3 @@ ALTER TABLE ONLY public.users
 
 --
 --
-
