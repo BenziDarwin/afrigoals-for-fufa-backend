@@ -49,6 +49,16 @@ func ConnectDB() *gorm.DB {
 		log.Fatal("Failed to connect to PostgreSQL:", err)
 	}
 
+	// The schema is owned by migrations/. AutoMigrate is opt-in for local
+	// development only: it adds columns but never drops or renames them, and it
+	// leaves no record of what changed, so it must not run against a deployed
+	// database.
+	if getEnv("AUTO_MIGRATE", nil) != "true" {
+		return DB
+	}
+
+	log.Println("WARNING: AUTO_MIGRATE=true, the schema may be altered on boot")
+
 	// Ordered so that a referenced table is always created before the table
 	// that references it.
 	err = DB.AutoMigrate(
