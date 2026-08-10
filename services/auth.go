@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"strings"
 
 	"afrigoals.com/database"
 	"afrigoals.com/middleware"
@@ -54,7 +55,23 @@ func RegisterUser(c *fiber.Ctx) error {
 		})
 	}
 
-	role := models.UserRole(req.Role)
+	role := models.UserRole(strings.TrimSpace(req.Role))
+
+	// An unrecognised role is a client error, so name the accepted values.
+	if !models.IsValidRole(role) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":         "Invalid role",
+			"allowed_roles": models.SelfRegisterableRoles(),
+		})
+	}
+
+	// A recognised but privileged role is an authorization decision, so say
+	// nothing about which roles exist beyond the ones already offered above.
+	if !models.IsSelfRegisterable(role) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "This role cannot be self-registered. Contact a platform administrator.",
+		})
+	}
 
 	// Validate role-specific requirements
 	if role == models.LeagueAdmin {
