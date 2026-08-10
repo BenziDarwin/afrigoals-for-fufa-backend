@@ -31,7 +31,10 @@ type AnalysisEvent struct {
 	// Associated clip (if generated)
 	ClipURL *string `gorm:"size:500" json:"clip_url,omitempty"`
 
-	// Statistics reference (optional)
+	// Most recently attached statistics row. This is a plain pointer column,
+	// not an association: AnalysisEventStats.AnalysisEventID is the owning side
+	// of the relationship, and declaring both directions as foreign keys makes
+	// the two tables circularly dependent and impossible to migrate.
 	StatsID *uint `json:"stats_id,omitempty"`
 
 	// Analyst who tagged the event
@@ -42,10 +45,9 @@ type AnalysisEvent struct {
 	UpdatedAt time.Time `json:"updated_at"`
 
 	// Relationships
-	Match  *Match              `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
-	Video  *MatchVideo         `gorm:"foreignKey:VideoID;constraint:OnDelete:CASCADE" json:"video,omitempty"`
-	Player *Player             `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
-	Stats  *AnalysisEventStats `gorm:"foreignKey:StatsID" json:"stats,omitempty"`
+	Match  *Match      `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
+	Video  *MatchVideo `gorm:"foreignKey:VideoID;constraint:OnDelete:CASCADE" json:"video,omitempty"`
+	Player *Player     `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
 }
 
 // TableName specifies the table name for GORM
