@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"afrigoals.com/database"
+	"afrigoals.com/middleware"
 	"afrigoals.com/routes"
 	"github.com/gofiber/fiber/v2"
 	"github.com/joho/godotenv"
@@ -21,6 +22,9 @@ func main() {
 	flag.Parse()
 
 	_ = godotenv.Load(*envFile)
+
+	// Validate auth configuration before anything starts listening.
+	middleware.MustLoadAuthConfig()
 
 	app := fiber.New(fiber.Config{
 		ReadBufferSize: 16384,
