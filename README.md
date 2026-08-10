@@ -22,8 +22,17 @@ migrate -path migrations -database "$DATABASE_URL" up
 go run main.go           # listens on :6767
 ```
 
-`DATABASE_URL` takes the form
-`postgres://user:password@host:port/afrigoals?sslmode=disable`.
+The server builds its connection string from the individual `DB_*` variables in
+`.env`; `golang-migrate` takes a single URL. Keep them pointed at the same
+database:
+
+```bash
+# must match DB_NAME / DB_USER / DB_HOST / DB_PORT in .env
+export DATABASE_URL="postgres://postgres:password@localhost:5432/afrigoals?sslmode=disable"
+```
+
+If they disagree, migrations apply to one database and the server starts against
+another, and the first symptom is `relation "users" does not exist` at boot.
 
 The server refuses to start unless `JWT_SECRET_KEY`, `ADMIN_EMAIL` and
 `ADMIN_PASSWORD` are set. That is deliberate: booting with a default signing key
@@ -59,10 +68,25 @@ intended for local development. It adds columns but never drops or renames them,
 cannot backfill data, and leaves no record of what changed. Do not enable it
 against a deployed database.
 
-Note for databases created before migrations existed: several video tables were
-created by hand and may differ from the baseline. In particular `analysis_events`
-may still have a `NOT NULL` constraint on `video_id` and no `created_by` column.
-`AutoMigrate` will not relax an existing constraint, so repair those manually:
+### Adopting migrations on a database that already has tables
+
+The baseline uses plain `CREATE TABLE`, so running `migrate up` against a
+database that predates migrations fails on the first statement with
+`relation already exists` and leaves `schema_migrations.dirty = true`.
+
+Tell `migrate` the baseline is already applied instead of running it:
+
+```bash
+migrate -path migrations -database "$DATABASE_URL" force 1
+```
+
+`force` records the version without executing anything. Use it only for this
+baselining step. If a run has already gone dirty, `force 1` also clears the flag.
+
+Such databases may also differ from the baseline, because several video tables
+were created by hand. In particular `analysis_events` may still have a
+`NOT NULL` constraint on `video_id` and no `created_by` column. `AutoMigrate`
+will not relax an existing constraint, so repair those manually:
 
 ```sql
 ALTER TABLE analysis_events ALTER COLUMN video_id DROP NOT NULL;
