@@ -317,7 +317,12 @@ func UpdateUser(c *fiber.Ctx) error {
 
 	// Update role if provided
 	if req.Role != nil {
-		role := models.UserRole(*req.Role)
+		role := models.UserRole(strings.TrimSpace(*req.Role))
+		if !models.IsValidRole(role) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Invalid role",
+			})
+		}
 
 		// Validate role-specific requirements
 		if role == models.ClubManager {
