@@ -49,25 +49,36 @@ func ConnectDB() *gorm.DB {
 		log.Fatal("Failed to connect to PostgreSQL:", err)
 	}
 
+	// Ordered so that a referenced table is always created before the table
+	// that references it.
 	err = DB.AutoMigrate(
 		// Base tables
 		&models.League{}, // no FK
 		&models.User{},   // FK to League or Club
 
 		// Football domain
-		&models.Club{},         // FK to League
-		&models.Player{},       // FK to Club
-		&models.PlayerStats{},  // FK to Player
-		&models.Match{},        // FK to League (optional) or Clubs
-		&models.Formation{},    // FK to Match & Club
-		&models.LineupPlayer{}, // FK to Formation & Player
-		&models.MatchEvent{},   // FK to Match (and optionally Player & Club)
-		&models.Article{},      // FK to User (author)
-		&models.ArticleTag{},   // FK to Article (optional)
-		&models.Substitute{},   // ✅ ADD THIS - FK to Formation & Player
-		&models.UnavailablePlayer{},
-		&models.UploadSession{},
+		&models.Club{},              // FK to League
+		&models.Player{},            // FK to Club
+		&models.PlayerStats{},       // FK to Player
+		&models.Match{},             // FK to League (optional) or Clubs
+		&models.Formation{},         // FK to Match & Club
+		&models.LineupPlayer{},      // FK to Formation & Player
+		&models.Substitute{},        // FK to Formation & Player
+		&models.UnavailablePlayer{}, // FK to Formation & Player
+		&models.MatchEvent{},        // FK to Match (and optionally Player & Club)
 
+		// Content
+		&models.Article{},    // FK to User (author)
+		&models.ArticleTag{}, // FK to Article (optional)
+
+		// Video & analysis
+		&models.UploadSession{},
+		&models.MatchVideo{},         // FK to Match
+		&models.Video{},              // FK to Match
+		&models.Clip{},               // FK to Match & Video
+		&models.AnalysisEvent{},      // FK to Match & MatchVideo
+		&models.AnalysisEventStats{}, // FK to AnalysisEvent
+		&models.VideoAnalysisJob{},   // FK to Match & User
 	)
 	if err != nil {
 		log.Fatal("AutoMigrate failed:", err)
