@@ -2,7 +2,6 @@ package services
 
 import (
 	"errors"
-	"log"
 	"strings"
 
 	"afrigoals.com/database"
@@ -470,17 +469,17 @@ func ResetPasswordRequest(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"message": genericResponse})
 	}
 
-	resetToken, err := middleware.GenerateSecureToken(32)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to generate reset token",
-		})
-	}
-
-	// The token is a password-equivalent credential and must never be returned
-	// to the caller. Until delivery by email is implemented it is logged so a
-	// developer with server access can still complete a reset locally.
-	log.Printf("password reset token for %s: %s", user.Email, resetToken)
+	// TODO: password reset is not implemented. Completing it needs a
+	// password_reset_tokens table (hashed token, user id, expiry, used_at), an
+	// email delivery step, and a POST /auth/reset-password/confirm handler that
+	// consumes the token. Until then this endpoint intentionally does nothing
+	// beyond returning the generic message above.
+	//
+	// The token previously returned here was a password-equivalent credential
+	// that let any caller take over any account by email address alone. It is
+	// not logged either: nothing consumes it, so writing it to stdout would only
+	// copy the credential into log aggregation.
+	_ = user
 
 	return c.JSON(fiber.Map{"message": genericResponse})
 }
