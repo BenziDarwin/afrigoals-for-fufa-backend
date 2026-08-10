@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"log"
 	"strings"
 
 	"afrigoals.com/database"
@@ -460,11 +461,13 @@ func ResetPasswordRequest(c *fiber.Ctx) error {
 		})
 	}
 
+	// Both branches below return the same message so this endpoint cannot be
+	// used to discover which email addresses are registered.
+	const genericResponse = "If the email exists, a password reset link has been sent"
+
 	var user models.User
 	if err := database.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
-		return c.JSON(fiber.Map{
-			"message": "If the email exists, a password reset link has been sent",
-		})
+		return c.JSON(fiber.Map{"message": genericResponse})
 	}
 
 	resetToken, err := middleware.GenerateSecureToken(32)
@@ -474,10 +477,12 @@ func ResetPasswordRequest(c *fiber.Ctx) error {
 		})
 	}
 
-	return c.JSON(fiber.Map{
-		"message": "Password reset instructions sent to email",
-		"token":   resetToken, // Remove this in production
-	})
+	// The token is a password-equivalent credential and must never be returned
+	// to the caller. Until delivery by email is implemented it is logged so a
+	// developer with server access can still complete a reset locally.
+	log.Printf("password reset token for %s: %s", user.Email, resetToken)
+
+	return c.JSON(fiber.Map{"message": genericResponse})
 }
 
 // VerifyEmail handles email verification
