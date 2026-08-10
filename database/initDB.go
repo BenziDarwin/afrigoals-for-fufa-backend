@@ -41,12 +41,22 @@ func InitDB() {
 	switch {
 	case err == nil:
 		// Earlier versions of this function created the admin without a role,
-		// leaving an account that fails every role check. Repair it in place.
-		if existing.Role != models.AfrigoalsAdmin {
+		// leaving an account that fails every role check. Repair that specific
+		// case only - an account that already holds a different, valid role
+		// belongs to somebody else and must not be silently promoted.
+		switch existing.Role {
+		case "":
 			if err := DB.Model(&existing).Update("role", models.AfrigoalsAdmin).Error; err != nil {
 				log.Fatalf("Failed to set admin role on %s: %v", adminEmail, err)
 			}
-			log.Printf("Repaired role for existing admin user %s", adminEmail)
+			log.Printf("Repaired missing role for admin user %s", adminEmail)
+		case models.AfrigoalsAdmin:
+			// Already correct.
+		default:
+			log.Fatalf(
+				"ADMIN_EMAIL %s already belongs to a user with role %q; refusing to change it",
+				adminEmail, existing.Role,
+			)
 		}
 		return
 
