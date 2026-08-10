@@ -4,36 +4,18 @@ package services
 import (
 	"errors"
 	"strconv"
-	"time"
 
 	"afrigoals.com/database"
 	"afrigoals.com/middleware"
+	"afrigoals.com/models"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
 
-type AnalysisEvent struct {
-	ID               uint       `gorm:"primaryKey" json:"id"`
-	MatchID          uint       `gorm:"index;not null" json:"match_id"`
-	VideoID          *uint      `gorm:"index" json:"video_id,omitempty"`
-	Type             string     `gorm:"size:50;index;not null" json:"type"`
-	TimestampSeconds float64    `gorm:"not null" json:"timestamp_seconds"`
-	PlayerID         *uint      `gorm:"index" json:"player_id,omitempty"`
-	PlayerName       *string    `gorm:"size:120" json:"player_name,omitempty"`
-	CreatedBy        uint       `gorm:"index;not null" json:"created_by"`
-	ClipURL          *string    `gorm:"size:500" json:"clip_url,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-}
-
-func (AnalysisEvent) TableName() string {
-	return "analysis_events"
-}
-
 func ListAnalysisEvents(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 
-	var events []AnalysisEvent
+	var events []models.AnalysisEvent
 	if err := database.DB.
 		Where("match_id = ?", matchID).
 		Order("timestamp_seconds ASC").
@@ -57,7 +39,7 @@ func GetAnalysisEventByID(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 	eventID := c.Params("id")
 
-	var event AnalysisEvent
+	var event models.AnalysisEvent
 	if err := database.DB.
 		Where("match_id = ? AND id = ?", matchID, eventID).
 		First(&event).Error; err != nil {
@@ -118,7 +100,7 @@ func CreateAnalysisEvent(c *fiber.Ctx) error {
 		playerName = *req.PlayerName
 	}
 
-	event := AnalysisEvent{
+	event := models.AnalysisEvent{
 		MatchID:          uint(matchIDUint),
 		VideoID:          req.VideoID,
 		Type:             req.Type,
@@ -146,7 +128,7 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 	eventID := c.Params("id")
 
-	var event AnalysisEvent
+	var event models.AnalysisEvent
 	if err := database.DB.
 		Where("match_id = ? AND id = ?", matchID, eventID).
 		First(&event).Error; err != nil {
@@ -208,7 +190,7 @@ func DeleteAnalysisEvent(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 	eventID := c.Params("id")
 
-	result := database.DB.Where("match_id = ? AND id = ?", matchID, eventID).Delete(&AnalysisEvent{})
+	result := database.DB.Where("match_id = ? AND id = ?", matchID, eventID).Delete(&models.AnalysisEvent{})
 	if result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to delete analysis event",
