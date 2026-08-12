@@ -688,7 +688,7 @@ func CutClipByWindow(c *fiber.Ctx) error {
 	}
 
 	// Get the event
-	var event AnalysisEvent
+	var event models.AnalysisEvent
 	if err := database.DB.
 		Where("match_id = ? AND id = ?", matchIDUint, req.EventID).
 		First(&event).Error; err != nil {

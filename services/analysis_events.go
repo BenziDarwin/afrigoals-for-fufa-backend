@@ -4,36 +4,18 @@ package services
 import (
 	"errors"
 	"strconv"
-	"time"
 
 	"afrigoals.com/database"
 	"afrigoals.com/middleware"
+	"afrigoals.com/models"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
 
-type AnalysisEvent struct {
-	ID               uint       `gorm:"primaryKey" json:"id"`
-	MatchID          uint       `gorm:"index;not null" json:"match_id"`
-	VideoID          *uint      `gorm:"index" json:"video_id,omitempty"`
-	Type             string     `gorm:"size:50;index;not null" json:"type"`
-	TimestampSeconds float64    `gorm:"not null" json:"timestamp_seconds"`
-	PlayerID         *uint      `gorm:"index" json:"player_id,omitempty"`
-	PlayerName       *string    `gorm:"size:120" json:"player_name,omitempty"`
-	CreatedBy        uint       `gorm:"index;not null" json:"created_by"`
-	ClipURL          *string    `gorm:"size:500" json:"clip_url,omitempty"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-}
-
-func (AnalysisEvent) TableName() string {
-	return "analysis_events"
-}
-
 func ListAnalysisEvents(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 
-	var events []AnalysisEvent
+	var events []models.AnalysisEvent
 	if err := database.DB.
 		Where("match_id = ?", matchID).
 		Order("timestamp_seconds ASC").
@@ -57,7 +39,7 @@ func GetAnalysisEventByID(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 	eventID := c.Params("id")
 
-	var event AnalysisEvent
+	var event models.AnalysisEvent
 	if err := database.DB.
 		Where("match_id = ? AND id = ?", matchID, eventID).
 		First(&event).Error; err != nil {
@@ -90,7 +72,12 @@ func CreateAnalysisEvent(c *fiber.Ctx) error {
 	}
 
 	matchID := c.Params("match_id")
-	matchIDUint, _ := strconv.ParseUint(matchID, 10, 32)
+	matchIDUint, err := strconv.ParseUint(matchID, 10, 32)
+	if err != nil || matchIDUint == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid match_id",
+		})
+	}
 
 	var req struct {
 		VideoID          *uint   `json:"video_id"`
@@ -118,7 +105,7 @@ func CreateAnalysisEvent(c *fiber.Ctx) error {
 		playerName = *req.PlayerName
 	}
 
-	event := AnalysisEvent{
+	event := models.AnalysisEvent{
 		MatchID:          uint(matchIDUint),
 		VideoID:          req.VideoID,
 		Type:             req.Type,
@@ -146,7 +133,7 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 	eventID := c.Params("id")
 
-	var event AnalysisEvent
+	var event models.AnalysisEvent
 	if err := database.DB.
 		Where("match_id = ? AND id = ?", matchID, eventID).
 		First(&event).Error; err != nil {
@@ -174,26 +161,38 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 		})
 	}
 
+	// Update only the fields the caller supplied. Save would write every column,
+	// including uuid and created_by, which on rows predating this model would
+	// overwrite a NULL uuid with the zero UUID and collide on its unique index.
+	updates := map[string]any{}
+
 	if req.Type != nil {
 		event.Type = *req.Type
+		updates["type"] = event.Type
 	}
 	if req.TimestampSeconds != nil {
 		event.TimestampSeconds = *req.TimestampSeconds
+		updates["timestamp_seconds"] = event.TimestampSeconds
 	}
 	if req.PlayerID != nil {
 		event.PlayerID = req.PlayerID
+		updates["player_id"] = event.PlayerID
 	}
 	if req.PlayerName != nil {
 		event.PlayerName = req.PlayerName
+		updates["player_name"] = event.PlayerName
 	}
 	if req.ClipURL != nil {
 		event.ClipURL = req.ClipURL
+		updates["clip_url"] = event.ClipURL
 	}
 
-	if err := database.DB.Save(&event).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to update analysis event",
-		})
+	if len(updates) > 0 {
+		if err := database.DB.Model(&event).Updates(updates).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to update analysis event",
+			})
+		}
 	}
 
 	return c.JSON(fiber.Map{
@@ -208,7 +207,7 @@ func DeleteAnalysisEvent(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 	eventID := c.Params("id")
 
-	result := database.DB.Where("match_id = ? AND id = ?", matchID, eventID).Delete(&AnalysisEvent{})
+	result := database.DB.Where("match_id = ? AND id = ?", matchID, eventID).Delete(&models.AnalysisEvent{})
 	if result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to delete analysis event",

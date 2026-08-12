@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"strconv"
+	"strings"
 
 	"afrigoals.com/database"
 	"afrigoals.com/models"
@@ -181,7 +182,14 @@ func CreateUser(c *fiber.Ctx) error {
 		})
 	}
 
-	role := models.UserRole(req.Role)
+	// This handler is gated by AdminOnly, so the full role set is permitted here
+	// - including AfrigoalsAdmin. Only unknown roles are rejected.
+	role := models.UserRole(strings.TrimSpace(req.Role))
+	if !models.IsValidRole(role) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid role",
+		})
+	}
 
 	// Validate role-specific requirements
 	if role == models.ClubManager && req.ClubID == nil {
@@ -309,7 +317,12 @@ func UpdateUser(c *fiber.Ctx) error {
 
 	// Update role if provided
 	if req.Role != nil {
-		role := models.UserRole(*req.Role)
+		role := models.UserRole(strings.TrimSpace(*req.Role))
+		if !models.IsValidRole(role) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": "Invalid role",
+			})
+		}
 
 		// Validate role-specific requirements
 		if role == models.ClubManager {
