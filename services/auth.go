@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"strings"
 
 	"afrigoals.com/database"
 	"afrigoals.com/middleware"
@@ -54,7 +55,23 @@ func RegisterUser(c *fiber.Ctx) error {
 		})
 	}
 
-	role := models.UserRole(req.Role)
+	role := models.UserRole(strings.TrimSpace(req.Role))
+
+	// An unrecognised role is a client error, so name the accepted values.
+	if !models.IsValidRole(role) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":         "Invalid role",
+			"allowed_roles": models.SelfRegisterableRoles(),
+		})
+	}
+
+	// A recognised but privileged role is an authorization decision, so say
+	// nothing about which roles exist beyond the ones already offered above.
+	if !models.IsSelfRegisterable(role) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "This role cannot be self-registered. Contact a platform administrator.",
+		})
+	}
 
 	// Validate role-specific requirements
 	if role == models.LeagueAdmin {
@@ -443,24 +460,28 @@ func ResetPasswordRequest(c *fiber.Ctx) error {
 		})
 	}
 
+	// Both branches below return the same message so this endpoint cannot be
+	// used to discover which email addresses are registered.
+	const genericResponse = "If the email exists, a password reset link has been sent"
+
 	var user models.User
 	if err := database.DB.Where("email = ?", req.Email).First(&user).Error; err != nil {
-		return c.JSON(fiber.Map{
-			"message": "If the email exists, a password reset link has been sent",
-		})
+		return c.JSON(fiber.Map{"message": genericResponse})
 	}
 
-	resetToken, err := middleware.GenerateSecureToken(32)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to generate reset token",
-		})
-	}
+	// TODO: password reset is not implemented. Completing it needs a
+	// password_reset_tokens table (hashed token, user id, expiry, used_at), an
+	// email delivery step, and a POST /auth/reset-password/confirm handler that
+	// consumes the token. Until then this endpoint intentionally does nothing
+	// beyond returning the generic message above.
+	//
+	// The token previously returned here was a password-equivalent credential
+	// that let any caller take over any account by email address alone. It is
+	// not logged either: nothing consumes it, so writing it to stdout would only
+	// copy the credential into log aggregation.
+	_ = user
 
-	return c.JSON(fiber.Map{
-		"message": "Password reset instructions sent to email",
-		"token":   resetToken, // Remove this in production
-	})
+	return c.JSON(fiber.Map{"message": genericResponse})
 }
 
 // VerifyEmail handles email verification

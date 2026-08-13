@@ -23,7 +23,6 @@ type AnalysisEvent struct {
 	// Player association (optional - some events are team-level)
 	PlayerID   *uint   `gorm:"index" json:"player_id,omitempty"`
 	PlayerName *string `gorm:"size:255" json:"player_name,omitempty"`
-	CreatedBy  uint    `gorm:"index" json:"created_by"`
 
 	// Additional context
 	Notes *string `gorm:"type:text" json:"notes,omitempty"`
@@ -34,13 +33,15 @@ type AnalysisEvent struct {
 	// Statistics reference (optional)
 	StatsID *uint `json:"stats_id,omitempty"`
 
+	CreatedBy uint `gorm:"index;not null" json:"created_by"`
+
 	// Timestamps
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
 	// Relationships
 	Match  *Match              `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
-	Video  *Video              `gorm:"foreignKey:VideoID;constraint:OnDelete:CASCADE" json:"video,omitempty"`
+	Video  *MatchVideo         `gorm:"foreignKey:VideoID;constraint:OnDelete:CASCADE" json:"video,omitempty"`
 	Player *Player             `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
 	Stats  *AnalysisEventStats `gorm:"foreignKey:StatsID" json:"stats,omitempty"`
 }

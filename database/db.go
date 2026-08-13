@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 
 	"afrigoals.com/models"
 	"gorm.io/driver/postgres"
@@ -49,6 +51,20 @@ func ConnectDB() *gorm.DB {
 		log.Fatal("Failed to connect to PostgreSQL:", err)
 	}
 
+	// The schema is owned by migrations/. AutoMigrate is opt-in for local
+	// development only: it adds columns but never drops or renames them, and it
+	// leaves no record of what changed, so it must not run against a deployed
+	// database.
+	autoMigrate, _ := strconv.ParseBool(strings.TrimSpace(getEnv("AUTO_MIGRATE", nil)))
+	if !autoMigrate {
+		log.Println("AutoMigrate disabled; schema is managed by migrations/")
+		return DB
+	}
+
+	log.Println("WARNING: AUTO_MIGRATE is enabled, the schema may be altered on boot")
+
+	// GORM resolves the creation order from the declared relationships, so this
+	// list is grouped for readability rather than dependency-ordered.
 	err = DB.AutoMigrate(
 		// Base tables
 		&models.League{}, // no FK
@@ -62,18 +78,12 @@ func ConnectDB() *gorm.DB {
 		&models.Formation{},    // FK to Match & Club
 		&models.LineupPlayer{}, // FK to Formation & Player
 		&models.MatchEvent{},   // FK to Match (and optionally Player & Club)
-		&models.Video{},
-		&models.MatchVideo{},
-		&models.Clip{},
-		&models.AnalysisEvent{},
-		&models.AnalysisEventStats{},
-		&models.VideoAnalysisJob{},
-		&models.PlayerAnalysisReport{},
-		&models.Article{},    // FK to User (author)
-		&models.ArticleTag{}, // FK to Article (optional)
-		&models.Substitute{}, // ✅ ADD THIS - FK to Formation & Player
+		&models.Article{},      // FK to User (author)
+		&models.ArticleTag{},   // FK to Article (optional)
+		&models.Substitute{},   // ✅ ADD THIS - FK to Formation & Player
 		&models.UnavailablePlayer{},
 		&models.UploadSession{},
+
 	)
 	if err != nil {
 		log.Fatal("AutoMigrate failed:", err)

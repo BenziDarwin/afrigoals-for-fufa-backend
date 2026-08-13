@@ -1,0 +1,17 @@
+./analysis_event_stats_service.go
+./analysis_events.go
+./auth.go
+./cleanup.go
+./clips.go
+./club.go
+./formation.go
+./league.go
+./match.go
+./match_analyst.go
+./match_event.go
+./player.go
+./player_analysis_reports.go
+./user.go
+./video_jobs.go
+./video_upload.go
+./videos.go

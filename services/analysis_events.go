@@ -74,7 +74,12 @@ func CreateAnalysisEvent(c *fiber.Ctx) error {
 	}
 
 	matchID := c.Params("match_id")
-	matchIDUint, _ := strconv.ParseUint(matchID, 10, 32)
+	matchIDUint, err := strconv.ParseUint(matchID, 10, 32)
+	if err != nil || matchIDUint == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid match_id",
+		})
+	}
 
 	var req struct {
 		VideoID          uint    `json:"video_id"`
@@ -170,33 +175,40 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 		})
 	}
 
+	// Update only the fields the caller supplied. Save would write every column,
+	// including uuid and created_by, which on rows predating this model would
+	// overwrite a NULL uuid with the zero UUID and collide on its unique index.
+	updates := map[string]any{}
+
 	if req.Type != nil {
 		event.Type = *req.Type
+		updates["type"] = event.Type
 	}
 	if req.TimestampSeconds != nil {
 		event.TimestampSeconds = *req.TimestampSeconds
+		updates["timestamp_seconds"] = event.TimestampSeconds
 	}
 	if req.PlayerID != nil {
-		if *req.PlayerID == 0 {
-			event.PlayerID = nil
-		} else {
-			event.PlayerID = req.PlayerID
-		}
+		event.PlayerID = req.PlayerID
 	}
 	if req.PlayerName != nil {
 		event.PlayerName = req.PlayerName
+		updates["player_name"] = event.PlayerName
 	}
 	if req.ClipURL != nil {
 		event.ClipURL = req.ClipURL
+		updates["clip_url"] = event.ClipURL
 	}
 	if req.Notes != nil {
 		event.Notes = req.Notes
 	}
 
-	if err := database.DB.Save(&event).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to update analysis event",
-		})
+	if len(updates) > 0 {
+		if err := database.DB.Model(&event).Updates(updates).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to update analysis event",
+			})
+		}
 	}
 
 	return c.JSON(fiber.Map{

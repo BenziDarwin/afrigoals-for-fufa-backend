@@ -2,8 +2,10 @@ package middleware
 
 import (
 	"crypto/rand"
+	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"afrigoals.com/database"
@@ -11,6 +13,40 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v4"
 )
+
+// minJWTSecretLength is the shortest secret accepted for HS256. A key shorter
+// than the 256-bit digest weakens the signature.
+const minJWTSecretLength = 32
+
+var (
+	jwtSecretOnce sync.Once
+	jwtSecret     string
+)
+
+// mustJWTSecret returns the configured signing key, terminating the process if
+// it is absent or too short. The environment is read once and cached.
+func mustJWTSecret() string {
+	jwtSecretOnce.Do(func() {
+		secret := strings.TrimSpace(os.Getenv("JWT_SECRET_KEY"))
+		if secret == "" {
+			log.Fatal("JWT_SECRET_KEY is required")
+		}
+		if len(secret) < minJWTSecretLength {
+			log.Fatalf("JWT_SECRET_KEY must be at least %d characters", minJWTSecretLength)
+		}
+		jwtSecret = secret
+	})
+	return jwtSecret
+}
+
+// MustLoadAuthConfig validates authentication configuration at startup.
+//
+// Call this from main once the environment is loaded. DefaultAuthConfig runs on
+// every request, so an invalid secret has to fail the boot rather than take
+// down a server that is already serving traffic.
+func MustLoadAuthConfig() {
+	mustJWTSecret()
+}
 
 // AuthConfig holds configuration for authentication middleware
 type AuthConfig struct {
@@ -22,7 +58,7 @@ type AuthConfig struct {
 // DefaultAuthConfig returns default configuration
 func DefaultAuthConfig() AuthConfig {
 	return AuthConfig{
-		JWTSecret:       getEnv("JWT_SECRET_KEY", "jwt123"),
+		JWTSecret:       mustJWTSecret(),
 		CookieName:      "session_token",
 		SessionDuration: 7 * 24 * time.Hour, // 7 days
 	}
@@ -365,14 +401,6 @@ func RequestLogger() fiber.Handler {
 
 		return err
 	}
-}
-
-// getEnv gets environment variable with fallback
-func getEnv(key, fallback string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return fallback
 }
 
 // GenerateSecureToken generates a cryptographically secure random token

@@ -26,9 +26,9 @@ type VideoAnalysisJob struct {
 	Stage            string   `gorm:"size:128" json:"stage,omitempty"`
 	Progress         *float64 `json:"progress,omitempty"`
 
-	ResultJSON         string `gorm:"type:text" json:"result_json,omitempty"`
-	AnnotatedVideoPath string `gorm:"type:text" json:"annotated_video,omitempty"` // ✅ tag matches TS
-	SiglipHTMLPath     string `gorm:"type:text" json:"siglip_html,omitempty"`     // ✅ tag matches TS
+    ResultJSON         string `gorm:"type:longtext" json:"result_json,omitempty"`
+    AnnotatedVideoPath string `gorm:"type:text" json:"annotated_video,omitempty"` // ✅ tag matches TS
+    SiglipHTMLPath     string `gorm:"type:text" json:"siglip_html,omitempty"`      // ✅ tag matches TS
 
 	VideoID   *uint     `gorm:"index" json:"video_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`

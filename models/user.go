@@ -16,6 +16,34 @@ const (
 	DataAnalyst    UserRole = "data_analyst"
 )
 
+// SelfRegisterableRoles are the roles the public may choose at registration.
+// AfrigoalsAdmin is deliberately excluded: platform administrators are seeded
+// by InitDB or created by another administrator, never self-assigned.
+func SelfRegisterableRoles() []UserRole {
+	return []UserRole{LeagueAdmin, ClubManager, DataAnalyst}
+}
+
+// IsSelfRegisterable reports whether r may be chosen at registration.
+func IsSelfRegisterable(r UserRole) bool {
+	for _, allowed := range SelfRegisterableRoles() {
+		if r == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// IsValidRole reports whether r is a known role, including AfrigoalsAdmin.
+// Use this on administrator-only paths such as CreateUser.
+func IsValidRole(r UserRole) bool {
+	switch r {
+	case AfrigoalsAdmin, LeagueAdmin, ClubManager, DataAnalyst:
+		return true
+	default:
+		return false
+	}
+}
+
 type User struct {
 	ID        uint           `gorm:"primarykey" json:"ID"`
 	UUID      uuid.UUID      `gorm:"type:uuid;default:gen_random_uuid();unique;not null" json:"UUID"`
