@@ -333,17 +333,23 @@ func SetupRoutes(app *fiber.App) {
 	{
 		analystMatches.Get("/videos", getCache, services.ListMatchVideos)
 		analystMatches.Get("/clips", getCache, services.ListMatchClips)
+		analystMatches.Get("/players", getCache, services.GetMatchRosterPlayers)
 		analystMatches.Get("/analysis-events", getCache, services.ListAnalysisEvents)
 		analystMatches.Get("/analysis-events/:id", getCache, services.GetAnalysisEventByID)
+		analystMatches.Get("/player-reports", getCache, services.ListPlayerAnalysisReports)
+		analystMatches.Get("/player-reports/:report_id/pdf", services.DownloadPlayerAnalysisReportPDF)
+		analystMatches.Get("/team-performance/pdf", services.DownloadTeamPerformanceReportPDF)
 
 		analystMatchesWrite := analystMatches.Group("")
 		analystMatchesWrite.Use(middleware.DataAnalystOrAbove())
 		{
 			// Existing chunked upload endpoints
+			analystMatchesWrite.Post("/videos/upload", services.UploadMatchVideo)
 			analystMatchesWrite.Post("/videos/upload/init", services.InitMatchVideoUpload)
 			analystMatchesWrite.Put("/videos/upload/:upload_id/chunk", services.UploadMatchVideoChunk)
 			analystMatchesWrite.Post("/videos/upload/:upload_id/complete", services.CompleteMatchVideoUpload)
 			analystMatchesWrite.Get("/videos/upload/:upload_id/progress", services.GetUploadProgress)
+			analystMatchesWrite.Delete("/videos/upload/:upload_id/cancel", services.CancelMatchVideoUpload)
 
 			// NEW: upload to model server + create stored job row in DB
 			analystMatchesWrite.Post("/videos/upload-to-models", services.UploadMatchVideoToModelsAndStoreJob)
@@ -368,6 +374,10 @@ func SetupRoutes(app *fiber.App) {
 			analystMatchesWrite.Post("/analysis-events", services.CreateAnalysisEvent)
 			analystMatchesWrite.Put("/analysis-events/:id", services.UpdateAnalysisEvent)
 			analystMatchesWrite.Delete("/analysis-events/:id", services.DeleteAnalysisEvent)
+
+			// Player reports
+			analystMatchesWrite.Post("/player-reports", services.SavePlayerAnalysisReport)
+			analystMatchesWrite.Delete("/player-reports/:report_id", services.DeletePlayerAnalysisReport)
 
 			// Stats
 			analystMatchesWrite.Post("/analysis-events/:event_id/stats", services.AttachStatsToAnalysisEvent)

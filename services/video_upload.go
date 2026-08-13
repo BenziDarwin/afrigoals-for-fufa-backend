@@ -688,7 +688,7 @@ func CutClipByWindow(c *fiber.Ctx) error {
 	}
 
 	// Get the event
-	var event AnalysisEvent
+	var event models.AnalysisEvent
 	if err := database.DB.
 		Where("match_id = ? AND id = ?", matchIDUint, req.EventID).
 		First(&event).Error; err != nil {
@@ -717,7 +717,7 @@ func CutClipByWindow(c *fiber.Ctx) error {
 	// Create clip (DB first so we can name the file using clip.ID)
 	clip := models.Clip{
 		MatchID:   matchIDUint,
-		VideoID:   event.VideoID,
+		VideoID:   &event.VideoID,
 		EventID:   &req.EventID,
 		Title:     clipTitle,
 		StartSec:  startSec,

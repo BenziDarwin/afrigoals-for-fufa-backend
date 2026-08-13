@@ -62,12 +62,18 @@ func ConnectDB() *gorm.DB {
 		&models.Formation{},    // FK to Match & Club
 		&models.LineupPlayer{}, // FK to Formation & Player
 		&models.MatchEvent{},   // FK to Match (and optionally Player & Club)
-		&models.Article{},      // FK to User (author)
-		&models.ArticleTag{},   // FK to Article (optional)
-		&models.Substitute{},   // ✅ ADD THIS - FK to Formation & Player
+		&models.Video{},
+		&models.MatchVideo{},
+		&models.Clip{},
+		&models.AnalysisEvent{},
+		&models.AnalysisEventStats{},
+		&models.VideoAnalysisJob{},
+		&models.PlayerAnalysisReport{},
+		&models.Article{},    // FK to User (author)
+		&models.ArticleTag{}, // FK to Article (optional)
+		&models.Substitute{}, // ✅ ADD THIS - FK to Formation & Player
 		&models.UnavailablePlayer{},
 		&models.UploadSession{},
-
 	)
 	if err != nil {
 		log.Fatal("AutoMigrate failed:", err)

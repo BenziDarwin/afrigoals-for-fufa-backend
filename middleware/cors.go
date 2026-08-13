@@ -34,6 +34,7 @@ func CORS() fiber.Handler {
 
 		c.Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		c.Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Requested-With")
+		c.Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Content-Type")
 		c.Set("Access-Control-Allow-Credentials", "true")
 		c.Set("Access-Control-Max-Age", "3600") // cache preflight 1h
 
