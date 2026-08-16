@@ -462,6 +462,15 @@ func CreateAndAssignPlayerToClub(c *fiber.Ctx) error {
 		})
 	}
 
+	// One shirt number per club. Checked here so the caller gets a clear
+	// message rather than a raw unique-constraint error from Postgres.
+	if err := ensureJerseyFree(req.ClubID, req.JerseyNumber, 0); err != nil {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"success": false,
+			"error":   err.Error(),
+		})
+	}
+
 	// Create player with club assignment
 	var photoURL *string
 	if req.PhotoURL != "" {

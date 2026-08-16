@@ -16,6 +16,7 @@ import (
 func RegisterUser(c *fiber.Ctx) error {
 	var req struct {
 		Email      string `json:"email"`
+		FullName   string `json:"full_name,omitempty"`
 		Password   string `json:"password"`
 		Role       string `json:"role"`
 		LeagueName string `json:"league_name,omitempty"`
@@ -207,6 +208,7 @@ func RegisterUser(c *fiber.Ctx) error {
 	// Create user
 	user := models.User{
 		Email:    req.Email,
+		FullName: strings.TrimSpace(req.FullName),
 		Password: string(hashedPassword),
 		Role:     role,
 		ClubID:   clubID,
@@ -245,6 +247,7 @@ func RegisterUser(c *fiber.Ctx) error {
 				"ID":        user.ID,
 				"UUID":      user.UUID.String(),
 				"Email":     user.Email,
+				"full_name": user.FullName,
 				"role":      user.Role,
 				"ClubID":    user.ClubID,
 				"Club":      user.Club,
@@ -312,6 +315,7 @@ func LoginUser(c *fiber.Ctx) error {
 			"id":        user.ID,
 			"uuid":      user.UUID.String(),
 			"email":     user.Email,
+			"full_name": user.FullName,
 			"role":      user.Role,
 			"club_id":   user.ClubID,
 			"league_id": user.LeagueID,
@@ -348,6 +352,7 @@ func GetCurrentUser(c *fiber.Ctx) error {
 			"id":        fullUser.ID,
 			"uuid":      fullUser.UUID.String(),
 			"email":     fullUser.Email,
+			"full_name": fullUser.FullName,
 			"role":      fullUser.Role,
 			"club_id":   fullUser.ClubID,
 			"league_id": fullUser.LeagueID,
@@ -509,7 +514,8 @@ func UpdateProfile(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Email string `json:"email,omitempty"`
+		Email    string  `json:"email,omitempty"`
+		FullName *string `json:"full_name,omitempty"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -537,6 +543,11 @@ func UpdateProfile(c *fiber.Ctx) error {
 		updates["email"] = req.Email
 	}
 
+	// A pointer distinguishes "not supplied" from "cleared".
+	if req.FullName != nil {
+		updates["full_name"] = strings.TrimSpace(*req.FullName)
+	}
+
 	if len(updates) > 0 {
 		if err := database.DB.Model(&dbUser).Updates(updates).Error; err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -553,6 +564,7 @@ func UpdateProfile(c *fiber.Ctx) error {
 			"id":        dbUser.ID,
 			"uuid":      dbUser.UUID.String(),
 			"email":     dbUser.Email,
+			"full_name": dbUser.FullName,
 			"role":      dbUser.Role,
 			"club_id":   dbUser.ClubID,
 			"league_id": dbUser.LeagueID,
@@ -576,6 +588,7 @@ func ValidateToken(c *fiber.Ctx) error {
 			"id":        user.ID,
 			"uuid":      user.UUID.String(),
 			"email":     user.Email,
+			"full_name": user.FullName,
 			"role":      user.Role,
 			"club_id":   user.ClubID,
 			"league_id": user.LeagueID,

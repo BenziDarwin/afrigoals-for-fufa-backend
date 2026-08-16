@@ -495,6 +495,7 @@ func AddClubToLeague(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
+		"success": true,
 		"message": "Club added to league successfully",
 		"league": fiber.Map{
 			"id":   league.ID,
@@ -563,6 +564,7 @@ func RemoveClubFromLeague(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
+		"success": true,
 		"message": "Club removed from league successfully",
 	})
 }
