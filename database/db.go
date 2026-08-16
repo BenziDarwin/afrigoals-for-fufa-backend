@@ -92,12 +92,13 @@ func ConnectDB() *gorm.DB {
 
 		// Video & analysis
 		&models.UploadSession{},
-		&models.MatchVideo{},         // FK to Match
-		&models.Video{},              // FK to Match
-		&models.Clip{},               // FK to Match & Video
-		&models.AnalysisEvent{},      // FK to Match & MatchVideo
-		&models.AnalysisEventStats{}, // FK to AnalysisEvent
-		&models.VideoAnalysisJob{},   // FK to Match & User
+		&models.MatchVideo{},           // FK to Match
+		&models.Video{},                // FK to Match
+		&models.Clip{},                 // FK to Match & Video
+		&models.AnalysisEvent{},        // FK to Match
+		&models.AnalysisEventStats{},   // FK to AnalysisEvent
+		&models.PlayerAnalysisReport{}, // FK to Match & Player
+		&models.VideoAnalysisJob{},     // FK to Match & User
 	)
 	if err != nil {
 		log.Fatal("AutoMigrate failed:", err)

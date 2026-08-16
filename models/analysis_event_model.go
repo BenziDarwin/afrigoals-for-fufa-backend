@@ -51,8 +51,15 @@ type AnalysisEvent struct {
 	UpdatedAt time.Time `json:"updated_at"`
 
 	// Relationships
-	Match  *Match  `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
-	Player *Player `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
+	//
+	// Stats is declared as a has-one against AnalysisEventStats.AnalysisEventID
+	// rather than as a belongs-to against StatsID. Both directions would make
+	// the two tables reference each other and AutoMigrate cannot order a cycle,
+	// so this keeps Preload("Stats") working while leaving the only foreign key
+	// on the child, where it already exists.
+	Match  *Match              `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
+	Player *Player             `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
+	Stats  *AnalysisEventStats `gorm:"foreignKey:AnalysisEventID;references:ID;constraint:OnDelete:CASCADE" json:"stats,omitempty"`
 }
 
 // TableName specifies the table name for GORM
