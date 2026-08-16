@@ -12,9 +12,16 @@ type AnalysisEvent struct {
 	ID   uint      `gorm:"primaryKey" json:"id"`
 	UUID uuid.UUID `gorm:"type:uuid;default:gen_random_uuid();uniqueIndex" json:"uuid"`
 
-	// Match and video references
-	MatchID uint `gorm:"not null;index" json:"match_id"`
-	VideoID uint `gorm:"not null;index" json:"video_id"`
+	// Match and video references. VideoID is optional: an analyst may tag
+	// events before a video has been attached to the match.
+	//
+	// VideoID holds a videos.id, which is what ListMatchVideos returns and what
+	// CutClipByWindow resolves against. It is deliberately not declared as an
+	// association: the older model pointed it at MatchVideo, and since videos
+	// and match_videos are separate tables with separate id sequences, a foreign
+	// key in either direction would reject ids the API itself hands out.
+	MatchID uint  `gorm:"not null;index" json:"match_id"`
+	VideoID *uint `gorm:"index" json:"video_id,omitempty"`
 
 	// Event details
 	Type             string  `gorm:"size:50;not null;index" json:"type"` // e.g., "goal", "shot", "cross", "foul"
@@ -30,9 +37,13 @@ type AnalysisEvent struct {
 	// Associated clip (if generated)
 	ClipURL *string `gorm:"size:500" json:"clip_url,omitempty"`
 
-	// Statistics reference (optional)
+	// Most recently attached statistics row. This is a plain pointer column,
+	// not an association: AnalysisEventStats.AnalysisEventID is the owning side
+	// of the relationship, and declaring both directions as foreign keys makes
+	// the two tables circularly dependent and impossible to migrate.
 	StatsID *uint `json:"stats_id,omitempty"`
 
+	// Analyst who tagged the event
 	CreatedBy uint `gorm:"index;not null" json:"created_by"`
 
 	// Timestamps
@@ -40,10 +51,15 @@ type AnalysisEvent struct {
 	UpdatedAt time.Time `json:"updated_at"`
 
 	// Relationships
+	//
+	// Stats is declared as a has-one against AnalysisEventStats.AnalysisEventID
+	// rather than as a belongs-to against StatsID. Both directions would make
+	// the two tables reference each other and AutoMigrate cannot order a cycle,
+	// so this keeps Preload("Stats") working while leaving the only foreign key
+	// on the child, where it already exists.
 	Match  *Match              `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
-	Video  *MatchVideo         `gorm:"foreignKey:VideoID;constraint:OnDelete:CASCADE" json:"video,omitempty"`
 	Player *Player             `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
-	Stats  *AnalysisEventStats `gorm:"foreignKey:StatsID" json:"stats,omitempty"`
+	Stats  *AnalysisEventStats `gorm:"foreignKey:AnalysisEventID;references:ID;constraint:OnDelete:CASCADE" json:"stats,omitempty"`
 }
 
 // TableName specifies the table name for GORM
