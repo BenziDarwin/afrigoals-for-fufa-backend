@@ -190,6 +190,7 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 	}
 	if req.PlayerID != nil {
 		event.PlayerID = req.PlayerID
+		updates["player_id"] = event.PlayerID
 	}
 	if req.PlayerName != nil {
 		event.PlayerName = req.PlayerName
@@ -201,6 +202,7 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 	}
 	if req.Notes != nil {
 		event.Notes = req.Notes
+		updates["notes"] = event.Notes
 	}
 
 	if len(updates) > 0 {

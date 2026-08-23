@@ -425,10 +425,15 @@ func GetAnalystMatches(c *fiber.Ctx) error {
 		totalPages++
 	}
 
+	matchList := make([]fiber.Map, len(matches))
+	for i, match := range matches {
+		matchList[i] = buildMatchResponse(match)
+	}
+
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": fiber.Map{
-			"matches":     matches,
+			"matches":     matchList,
 			"total":       total,
 			"page":        page,
 			"per_page":    perPage,

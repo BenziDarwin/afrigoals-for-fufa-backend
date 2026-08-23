@@ -344,6 +344,7 @@ func SetupRoutes(app *fiber.App) {
 		analystMatchesWrite.Use(middleware.DataAnalystOrAbove())
 		{
 			// Existing chunked upload endpoints
+			analystMatchesWrite.Put("/score", services.UpdateAnalystMatchScore)
 			analystMatchesWrite.Post("/videos/upload", services.UploadMatchVideo)
 			analystMatchesWrite.Post("/videos/upload/init", services.InitMatchVideoUpload)
 			analystMatchesWrite.Put("/videos/upload/:upload_id/chunk", services.UploadMatchVideoChunk)

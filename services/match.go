@@ -6,10 +6,134 @@ import (
 	"time"
 
 	"afrigoals.com/database"
+	"afrigoals.com/middleware"
 	"afrigoals.com/models"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
+
+func buildFormationResponse(formation models.Formation) fiber.Map {
+	lineupList := make([]fiber.Map, len(formation.Lineup))
+	for i, lp := range formation.Lineup {
+		lineupList[i] = fiber.Map{
+			"id":            lp.ID,
+			"uuid":          lp.UUID,
+			"formation_id":  lp.FormationID,
+			"player_id":     lp.PlayerID,
+			"name":          lp.Name,
+			"jersey_number": lp.JerseyNumber,
+			"position":      lp.Position,
+			"x":             lp.X,
+			"y":             lp.Y,
+			"created_at":    lp.CreatedAt,
+			"updated_at":    lp.UpdatedAt,
+		}
+	}
+
+	subsList := make([]fiber.Map, len(formation.Substitutes))
+	for i, s := range formation.Substitutes {
+		subsList[i] = fiber.Map{
+			"id":            s.ID,
+			"uuid":          s.UUID,
+			"formation_id":  s.FormationID,
+			"player_id":     s.PlayerID,
+			"name":          s.Name,
+			"jersey_number": s.JerseyNumber,
+			"position":      s.Position,
+			"created_at":    s.CreatedAt,
+			"updated_at":    s.UpdatedAt,
+		}
+	}
+
+	unavailableList := make([]fiber.Map, len(formation.Unavailable))
+	for i, u := range formation.Unavailable {
+		unavailableList[i] = fiber.Map{
+			"id":            u.ID,
+			"uuid":          u.UUID,
+			"formation_id":  u.FormationID,
+			"player_id":     u.PlayerID,
+			"name":          u.Name,
+			"jersey_number": u.JerseyNumber,
+			"position":      u.Position,
+			"reason":        u.Reason,
+			"details":       u.Details,
+			"created_at":    u.CreatedAt,
+			"updated_at":    u.UpdatedAt,
+		}
+	}
+
+	return fiber.Map{
+		"id":          formation.ID,
+		"uuid":        formation.UUID,
+		"match_id":    formation.MatchID,
+		"club_id":     formation.ClubID,
+		"formation":   formation.Formation,
+		"lineup":      lineupList,
+		"substitutes": subsList,
+		"unavailable": unavailableList,
+		"created_at":  formation.CreatedAt,
+		"updated_at":  formation.UpdatedAt,
+	}
+}
+
+func buildFormationsResponse(formations []models.Formation) []fiber.Map {
+	formationsList := make([]fiber.Map, len(formations))
+	for i, formation := range formations {
+		formationsList[i] = buildFormationResponse(formation)
+	}
+	return formationsList
+}
+
+func findFormationByClub(formations []models.Formation, clubID uint) *models.Formation {
+	for i := range formations {
+		if formations[i].ClubID == clubID {
+			return &formations[i]
+		}
+	}
+	return nil
+}
+
+func buildClubWithFormationResponse(club models.Club, formation *models.Formation) fiber.Map {
+	clubMap := fiber.Map{
+		"id":         club.ID,
+		"uuid":       club.UUID,
+		"name":       club.Name,
+		"created_at": club.CreatedAt,
+		"updated_at": club.UpdatedAt,
+		"formation":  nil,
+	}
+	if formation != nil {
+		clubMap["formation"] = buildFormationResponse(*formation)
+	}
+	return clubMap
+}
+
+func buildMatchResponse(match models.Match) fiber.Map {
+	return fiber.Map{
+		"id":           match.ID,
+		"uuid":         match.UUID,
+		"league_id":    match.LeagueID,
+		"league":       match.League,
+		"home_club_id": match.HomeClubID,
+		"home_club": buildClubWithFormationResponse(
+			match.HomeClub,
+			findFormationByClub(match.Formations, match.HomeClubID),
+		),
+		"away_club_id": match.AwayClubID,
+		"away_club": buildClubWithFormationResponse(
+			match.AwayClub,
+			findFormationByClub(match.Formations, match.AwayClubID),
+		),
+		"date":        match.Date,
+		"score_home":  match.ScoreHome,
+		"score_away":  match.ScoreAway,
+		"event_count": len(match.Events),
+		"formations":  buildFormationsResponse(match.Formations),
+		"events":      match.Events,
+		"created_at":  match.CreatedAt,
+		"updated_at":  match.UpdatedAt,
+	}
+}
 
 // ========================================
 // MATCH CRUD OPERATIONS
@@ -49,19 +173,7 @@ func GetMatchByID(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"match": fiber.Map{
-			"id":           match.ID,
-			"uuid":         match.UUID,
-			"league_id":    match.LeagueID,
-			"home_club_id": match.HomeClubID,
-			"away_club_id": match.AwayClubID,
-			"date":         match.Date,
-			"score_home":   match.ScoreHome,
-			"score_away":   match.ScoreAway,
-			"formations":   match.Formations,
-			"events":       match.Events,
-			"created_at":   match.CreatedAt,
-		},
+		"match": buildMatchResponse(match),
 	})
 }
 
@@ -93,18 +205,7 @@ func GetMatchByUUID(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"match": fiber.Map{
-			"id":           match.ID,
-			"uuid":         match.UUID,
-			"league_id":    match.LeagueID,
-			"home_club_id": match.HomeClubID,
-			"away_club_id": match.AwayClubID,
-			"date":         match.Date,
-			"score_home":   match.ScoreHome,
-			"score_away":   match.ScoreAway,
-			"formations":   match.Formations,
-			"events":       match.Events,
-		},
+		"match": buildMatchResponse(match),
 	})
 }
 
@@ -179,69 +280,29 @@ func ListMatches(c *fiber.Ctx) error {
 	// Convert to response format WITH formations
 	matchList := make([]fiber.Map, len(matches))
 	for i, match := range matches {
-		formationsList := make([]fiber.Map, len(match.Formations))
-		for j, formation := range match.Formations {
-			lineupList := make([]fiber.Map, len(formation.Lineup))
-			for k, lp := range formation.Lineup {
-				lineupList[k] = fiber.Map{
-					"id":            lp.ID,
-					"player_id":     lp.PlayerID,
-					"name":          lp.Name,
-					"jersey_number": lp.JerseyNumber,
-					"position":      lp.Position,
-					"x":             lp.X,
-					"y":             lp.Y,
-				}
-			}
-
-			subsList := make([]fiber.Map, len(formation.Substitutes))
-			for k, s := range formation.Substitutes {
-				subsList[k] = fiber.Map{
-					"id":            s.ID,
-					"player_id":     s.PlayerID,
-					"name":          s.Name,
-					"jersey_number": s.JerseyNumber,
-					"position":      s.Position,
-				}
-			}
-
-			unavailableList := make([]fiber.Map, len(formation.Unavailable))
-			for k, u := range formation.Unavailable {
-				unavailableList[k] = fiber.Map{
-					"id":            u.ID,
-					"player_id":     u.PlayerID,
-					"name":          u.Name,
-					"jersey_number": u.JerseyNumber,
-					"position":      u.Position,
-					"reason":        u.Reason,
-					"details":       u.Details,
-				}
-			}
-
-			formationsList[j] = fiber.Map{
-				"id":          formation.ID,
-				"uuid":        formation.UUID,
-				"match_id":    formation.MatchID,
-				"club_id":     formation.ClubID,
-				"formation":   formation.Formation,
-				"lineup":      lineupList,
-				"substitutes": subsList,
-				"unavailable": unavailableList,
-			}
-		}
+		formationsList := buildFormationsResponse(match.Formations)
 
 		matchList[i] = fiber.Map{
 			"id":           match.ID,
 			"uuid":         match.UUID,
 			"league_id":    match.LeagueID,
+			"league":       match.League,
 			"home_club_id": match.HomeClubID,
+			"home_club": buildClubWithFormationResponse(
+				match.HomeClub,
+				findFormationByClub(match.Formations, match.HomeClubID),
+			),
 			"away_club_id": match.AwayClubID,
-			"date":         match.Date,
-			"score_home":   match.ScoreHome,
-			"score_away":   match.ScoreAway,
-			"event_count":  len(match.Events),
-			"formations":   formationsList,
-			"created_at":   match.CreatedAt,
+			"away_club": buildClubWithFormationResponse(
+				match.AwayClub,
+				findFormationByClub(match.Formations, match.AwayClubID),
+			),
+			"date":        match.Date,
+			"score_home":  match.ScoreHome,
+			"score_away":  match.ScoreAway,
+			"event_count": len(match.Events),
+			"formations":  formationsList,
+			"created_at":  match.CreatedAt,
 		}
 	}
 
@@ -505,6 +566,103 @@ func UpdateMatch(c *fiber.Ctx) error {
 	})
 }
 
+// UpdateAnalystMatchScore lets assigned analysts record the final score only.
+func UpdateAnalystMatchScore(c *fiber.Ctx) error {
+	user, err := middleware.GetUserFromContext(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Unauthorized",
+		})
+	}
+
+	matchID, err := strconv.ParseUint(c.Params("match_id"), 10, 32)
+	if err != nil || matchID == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid match ID",
+		})
+	}
+
+	var req struct {
+		ScoreHome *int `json:"score_home"`
+		ScoreAway *int `json:"score_away"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid request body",
+		})
+	}
+	if req.ScoreHome == nil || req.ScoreAway == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Both score_home and score_away are required",
+		})
+	}
+	if *req.ScoreHome < 0 || *req.ScoreAway < 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Scores cannot be negative",
+		})
+	}
+
+	var match models.Match
+	if err := database.DB.First(&match, matchID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "Match not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Database error",
+		})
+	}
+
+	if user.Role == models.DataAnalyst {
+		var assignment models.MatchAnalyst
+		if err := database.DB.
+			Where("match_id = ? AND user_id = ?", matchID, user.ID).
+			First(&assignment).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": "Analyst is not assigned to this match",
+				})
+			}
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to verify analyst assignment",
+			})
+		}
+	}
+
+	if err := database.DB.Model(&match).Updates(map[string]interface{}{
+		"score_home": *req.ScoreHome,
+		"score_away": *req.ScoreAway,
+	}).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to update match score",
+		})
+	}
+
+	if err := database.DB.
+		Preload("League").
+		Preload("HomeClub").
+		Preload("AwayClub").
+		Preload("Formations").
+		Preload("Formations.Lineup").
+		Preload("Formations.Substitutes").
+		Preload("Formations.Unavailable").
+		Preload("Events").
+		First(&match, matchID).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to reload match",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"message": "Match score updated successfully",
+		"data": fiber.Map{
+			"match": buildMatchResponse(match),
+		},
+	})
+}
+
 // DeleteMatch soft deletes a match
 func DeleteMatch(c *fiber.Ctx) error {
 	id := c.Params("id")
@@ -541,6 +699,8 @@ func GetMatchesByClub(c *fiber.Ctx) error {
 	var matches []models.Match
 	if err := database.DB.
 		Preload("League").
+		Preload("HomeClub").
+		Preload("AwayClub").
 		Preload("Formations").
 		Preload("Formations.Lineup").
 		Preload("Formations.Substitutes").
@@ -556,69 +716,7 @@ func GetMatchesByClub(c *fiber.Ctx) error {
 
 	matchList := make([]fiber.Map, len(matches))
 	for i, match := range matches {
-		formationsList := make([]fiber.Map, len(match.Formations))
-
-		for j, formation := range match.Formations {
-			lineupList := make([]fiber.Map, len(formation.Lineup))
-			for k, lp := range formation.Lineup {
-				lineupList[k] = fiber.Map{
-					"id":            lp.ID,
-					"player_id":     lp.PlayerID,
-					"name":          lp.Name,
-					"jersey_number": lp.JerseyNumber,
-					"position":      lp.Position,
-					"x":             lp.X,
-					"y":             lp.Y,
-				}
-			}
-
-			subsList := make([]fiber.Map, len(formation.Substitutes))
-			for k, s := range formation.Substitutes {
-				subsList[k] = fiber.Map{
-					"id":            s.ID,
-					"player_id":     s.PlayerID,
-					"name":          s.Name,
-					"jersey_number": s.JerseyNumber,
-					"position":      s.Position,
-				}
-			}
-
-			unavailableList := make([]fiber.Map, len(formation.Unavailable))
-			for k, u := range formation.Unavailable {
-				unavailableList[k] = fiber.Map{
-					"id":            u.ID,
-					"player_id":     u.PlayerID,
-					"name":          u.Name,
-					"jersey_number": u.JerseyNumber,
-					"position":      u.Position,
-					"reason":        u.Reason,
-					"details":       u.Details,
-				}
-			}
-
-			formationsList[j] = fiber.Map{
-				"id":          formation.ID,
-				"uuid":        formation.UUID,
-				"match_id":    formation.MatchID,
-				"club_id":     formation.ClubID,
-				"formation":   formation.Formation,
-				"lineup":      lineupList,
-				"substitutes": subsList,
-				"unavailable": unavailableList,
-			}
-		}
-
-		matchList[i] = fiber.Map{
-			"id":           match.ID,
-			"uuid":         match.UUID,
-			"league_id":    match.LeagueID,
-			"home_club_id": match.HomeClubID,
-			"away_club_id": match.AwayClubID,
-			"formations":   formationsList,
-			"date":         match.Date,
-			"score_home":   match.ScoreHome,
-			"score_away":   match.ScoreAway,
-		}
+		matchList[i] = buildMatchResponse(match)
 	}
 
 	return c.JSON(fiber.Map{
@@ -631,6 +729,14 @@ func GetMatchesByClub(c *fiber.Ctx) error {
 func GetUpcomingMatches(c *fiber.Ctx) error {
 	var matches []models.Match
 	if err := database.DB.
+		Preload("League").
+		Preload("HomeClub").
+		Preload("AwayClub").
+		Preload("Formations").
+		Preload("Formations.Lineup").
+		Preload("Formations.Substitutes").
+		Preload("Formations.Unavailable").
+		Preload("Events").
 		Where("date > ?", time.Now()).
 		Order("date ASC").
 		Limit(10).
@@ -643,14 +749,7 @@ func GetUpcomingMatches(c *fiber.Ctx) error {
 
 	matchList := make([]fiber.Map, len(matches))
 	for i, match := range matches {
-		matchList[i] = fiber.Map{
-			"id":           match.ID,
-			"uuid":         match.UUID,
-			"league_id":    match.LeagueID,
-			"home_club_id": match.HomeClubID,
-			"away_club_id": match.AwayClubID,
-			"date":         match.Date,
-		}
+		matchList[i] = buildMatchResponse(match)
 	}
 
 	return c.JSON(fiber.Map{
@@ -666,8 +765,12 @@ func GetMatchSummary(c *fiber.Ctx) error {
 	var match models.Match
 	if err := database.DB.
 		Preload("League").
+		Preload("HomeClub").
+		Preload("AwayClub").
 		Preload("Formations").
 		Preload("Formations.Lineup").
+		Preload("Formations.Substitutes").
+		Preload("Formations.Unavailable").
 		Preload("Events").
 		First(&match, matchID).Error; err != nil {
 
@@ -682,17 +785,8 @@ func GetMatchSummary(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"match": fiber.Map{
-			"id":           match.ID,
-			"uuid":         match.UUID,
-			"league_id":    match.LeagueID,
-			"home_club_id": match.HomeClubID,
-			"away_club_id": match.AwayClubID,
-			"date":         match.Date,
-			"score_home":   match.ScoreHome,
-			"score_away":   match.ScoreAway,
-		},
-		"formations": match.Formations,
+		"match":      buildMatchResponse(match),
+		"formations": buildFormationsResponse(match.Formations),
 		"events":     match.Events,
 	})
 }
