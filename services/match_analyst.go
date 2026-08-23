@@ -9,7 +9,8 @@ import (
 	"afrigoals.com/models"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
-)
+	"log"
+)	
 
 // GetLeagueAnalysts retrieves all data analysts for a specific league
 func GetLeagueAnalysts(c *fiber.Ctx) error {
@@ -145,10 +146,20 @@ func AssignAnalystToMatch(c *fiber.Ctx) error {
 	}
 
 	if err := database.DB.Create(&assignment).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to assign analyst to match",
-		})
-	}
+    log.Printf(
+        "AssignAnalystToMatch failed: match_id=%d analyst_id=%d assigned_by=%d error=%v",
+        matchID,
+        req.AnalystID,
+        user.ID,
+        err,
+    )
+
+    return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+        "success": false,
+        "error":   "Failed to assign analyst to match",
+        "details": err.Error(), // REMOVE THIS FROM PUBLIC PRODUCTION API LATER
+    })
+}
 
 	return c.JSON(fiber.Map{
 		"success": true,
