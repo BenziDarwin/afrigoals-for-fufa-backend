@@ -57,4 +57,9 @@ type User struct {
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
+
+	// Declared last so that a table built by AutoMigrate has the same column
+	// order as one built by the migrations, where full_name arrives via
+	// ALTER TABLE ADD COLUMN and is therefore appended.
+	FullName string `gorm:"size:150" json:"full_name"`
 }

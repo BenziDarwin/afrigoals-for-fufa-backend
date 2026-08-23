@@ -177,12 +177,21 @@ func SetupRoutes(app *fiber.App) {
 		players.Get("/free", getCache, services.GetFreePlayers)
 		players.Get("/:player_id/statistics", getCache, services.GetPlayerStatistics)
 
+		// Club managers create players through /clubs/create-player, so they
+		// must be able to delete them too. DeletePlayer itself verifies the
+		// player belongs to a club this user actually manages.
+		//
+		// The middleware is attached to the route rather than to a group:
+		// moderatorPlayers below calls Use() on the same /players prefix, and
+		// that applies to everything registered after it, so a grouped version
+		// of this route would still be caught by LeagueAdminOrAbove.
+		players.Delete("/:id", middleware.ClubManagerOrAbove(), services.DeletePlayer)
+
 		moderatorPlayers := players.Group("")
 		moderatorPlayers.Use(middleware.LeagueAdminOrAbove())
 		{
 			moderatorPlayers.Post("", services.CreatePlayer)
 			moderatorPlayers.Put("/:id", services.UpdatePlayer)
-			moderatorPlayers.Delete("/:id", services.DeletePlayer)
 			moderatorPlayers.Post("/transfer", services.TransferPlayer)
 		}
 	}

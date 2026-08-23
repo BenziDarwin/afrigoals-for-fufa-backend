@@ -117,9 +117,13 @@ func CreateAnalysisEvent(c *fiber.Ctx) error {
 		playerName = *req.PlayerName
 	}
 
+	// VideoID is a *uint on the model because an event may be tagged before a
+	// video is attached; this handler still requires one, checked above.
+	videoID := req.VideoID
+
 	event := models.AnalysisEvent{
 		MatchID:          uint(matchIDUint),
-		VideoID:          req.VideoID,
+		VideoID:          &videoID,
 		Type:             req.Type,
 		TimestampSeconds: req.TimestampSeconds,
 		PlayerID:         req.PlayerID,

@@ -2,10 +2,12 @@ package services
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
 	"afrigoals.com/database"
+	"afrigoals.com/middleware"
 	"afrigoals.com/models"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -223,6 +225,15 @@ func CreatePlayer(c *fiber.Ctx) error {
 		}
 	}
 
+	// One shirt number per club (see models.Player).
+	if req.ClubID != nil {
+		if err := ensureJerseyFree(*req.ClubID, req.JerseyNumber, 0); err != nil {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+	}
+
 	// Create player
 	player := models.Player{
 		Name:         req.Name,
@@ -396,6 +407,33 @@ func DeletePlayer(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid player ID",
+		})
+	}
+
+	user, err := middleware.GetUserFromContext(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Unauthorized",
+		})
+	}
+
+	// Load the player first: this route is open to club managers, so the
+	// player's club decides whether this user may delete it.
+	var player models.Player
+	if err := database.DB.First(&player, playerID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error": "Player not found",
+			})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Database error",
+		})
+	}
+
+	if !middleware.CanManagePlayer(user, &player) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "You do not have permission to delete this player",
 		})
 	}
 
@@ -653,4 +691,28 @@ func GetPlayerStatistics(c *fiber.Ctx) error {
 		"club_name":     player.Club.Name,
 		"stats":         player.Stats,
 	})
+}
+
+// ensureJerseyFree reports whether jersey is already taken at club by a player
+// other than excludeID. Soft-deleted players are ignored, matching the partial
+// unique index on players.
+func ensureJerseyFree(clubID uint, jersey int, excludeID uint) error {
+	if clubID == 0 {
+		return nil
+	}
+
+	q := database.DB.Model(&models.Player{}).
+		Where("club_id = ? AND jersey_number = ?", clubID, jersey)
+	if excludeID != 0 {
+		q = q.Where("id <> ?", excludeID)
+	}
+
+	var count int64
+	if err := q.Count(&count).Error; err != nil {
+		return fmt.Errorf("could not verify jersey number")
+	}
+	if count > 0 {
+		return fmt.Errorf("jersey number %d is already taken at this club", jersey)
+	}
+	return nil
 }
