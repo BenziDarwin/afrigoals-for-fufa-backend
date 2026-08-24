@@ -343,6 +343,7 @@ func SetupRoutes(app *fiber.App) {
 		analystMatches.Get("/videos", getCache, services.ListMatchVideos)
 		analystMatches.Get("/clips", getCache, services.ListMatchClips)
 		analystMatches.Get("/players", getCache, services.GetMatchRosterPlayers)
+		analystMatches.Get("/event-types", getCache, services.ListEventTypes)
 		analystMatches.Get("/analysis-events", getCache, services.ListAnalysisEvents)
 		analystMatches.Get("/analysis-events/:id", getCache, services.GetAnalysisEventByID)
 		analystMatches.Get("/player-reports", getCache, services.ListPlayerAnalysisReports)
@@ -354,6 +355,8 @@ func SetupRoutes(app *fiber.App) {
 		{
 			// Existing chunked upload endpoints
 			analystMatchesWrite.Put("/score", services.UpdateAnalystMatchScore)
+			analystMatchesWrite.Post("/videos/direct-upload/init", services.InitR2MatchVideoUpload)
+			analystMatchesWrite.Post("/videos/direct-upload/complete", services.CompleteR2MatchVideoUpload)
 			analystMatchesWrite.Post("/videos/upload", services.UploadMatchVideo)
 			analystMatchesWrite.Post("/videos/upload/init", services.InitMatchVideoUpload)
 			analystMatchesWrite.Put("/videos/upload/:upload_id/chunk", services.UploadMatchVideoChunk)

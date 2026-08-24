@@ -14,6 +14,8 @@ type MatchVideo struct {
 
 	OriginalFilename string `json:"original_filename"`
 	VideoURL         string `json:"video_url"`
+	DurationSec      *int   `json:"duration_sec,omitempty"`
+	UploadedBy       *uint  `gorm:"index" json:"uploaded_by,omitempty"`
 }
 
 func (v *MatchVideo) BeforeCreate(tx *gorm.DB) (err error) {

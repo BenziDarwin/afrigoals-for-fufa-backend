@@ -138,6 +138,7 @@ func UploadMatchVideo(c *fiber.Ctx) error {
 		MatchID:          matchIDUint,
 		OriginalFilename: originalFilename,
 		VideoURL:         videoURL,
+		UploadedBy:       &user.ID,
 	}
 	_ = database.DB.Create(&matchVideo).Error
 
@@ -503,6 +504,7 @@ func CompleteMatchVideoUpload(c *fiber.Ctx) error {
 		MatchID:          sess.MatchID,
 		OriginalFilename: originalFilename,
 		VideoURL:         videoURL,
+		UploadedBy:       &user.ID,
 	}
 	_ = database.DB.Create(&matchVideo).Error
 
@@ -761,20 +763,27 @@ func CutClipByWindow(c *fiber.Ctx) error {
 		})
 	}
 
-	inputPath, ok := uploadsURLToLocalPath(videoURL)
+	inputPath, isLocal, ok := videoURLToClipInput(videoURL)
 	if !ok {
 		_ = database.DB.Delete(&clip).Error
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Video is not stored under /uploads (cannot cut clip)",
+			"error": "Video URL is not usable for clip cutting",
 		})
 	}
 
-	if _, err := os.Stat(inputPath); err != nil {
+	if isLocal {
+		if _, err := os.Stat(inputPath); err != nil {
+			_ = database.DB.Delete(&clip).Error
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+				"error":   "Video file not found on disk",
+				"details": inputPath,
+			})
+		}
+	}
+
+	if !isLocal && strings.TrimSpace(inputPath) == "" {
 		_ = database.DB.Delete(&clip).Error
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error":   "Video file not found on disk",
-			"details": inputPath,
-		})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Video URL missing for clip cutting"})
 	}
 
 	// ✅ ADDED: run ffmpeg to actually generate the clip file (browser-safe mp4 + faststart)
@@ -827,6 +836,19 @@ func uploadsURLToLocalPath(url string) (string, bool) {
 	}
 	rel := strings.TrimPrefix(u, "/")
 	return filepath.Clean("./" + filepath.FromSlash(rel)), true
+}
+
+func videoURLToClipInput(videoURL string) (string, bool, bool) {
+	if localPath, ok := uploadsURLToLocalPath(videoURL); ok {
+		return localPath, true, true
+	}
+
+	u := strings.TrimSpace(videoURL)
+	if strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") {
+		return u, false, true
+	}
+
+	return "", false, false
 }
 
 func uploadTempDir(uploadID uint) string {

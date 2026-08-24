@@ -26,13 +26,19 @@ type AnalysisEvent struct {
 	// Event details
 	Type             string  `gorm:"size:50;not null;index" json:"type"` // e.g., "goal", "shot", "cross", "foul"
 	TimestampSeconds float64 `gorm:"not null" json:"timestamp_seconds"`  // When event occurred in video
+	EventTypeID      *uint   `gorm:"index" json:"event_type_id,omitempty"`
+	TeamID           *uint   `gorm:"index" json:"team_id,omitempty"`
 
 	// Player association (optional - some events are team-level)
-	PlayerID   *uint   `gorm:"index" json:"player_id,omitempty"`
-	PlayerName *string `gorm:"size:255" json:"player_name,omitempty"`
+	PlayerID          *uint   `gorm:"index" json:"player_id,omitempty"`
+	SecondaryPlayerID *uint   `gorm:"index" json:"secondary_player_id,omitempty"`
+	PlayerName        *string `gorm:"size:255" json:"player_name,omitempty"`
 
 	// Additional context
-	Notes *string `gorm:"type:text" json:"notes,omitempty"`
+	PitchZone       *string  `gorm:"size:80" json:"pitch_zone,omitempty"`
+	Outcome         *string  `gorm:"size:80" json:"outcome,omitempty"`
+	Notes           *string  `gorm:"type:text" json:"notes,omitempty"`
+	ConfidenceScore *float64 `json:"confidence_score,omitempty"`
 
 	// Associated clip (if generated)
 	ClipURL *string `gorm:"size:500" json:"clip_url,omitempty"`
@@ -57,9 +63,10 @@ type AnalysisEvent struct {
 	// the two tables reference each other and AutoMigrate cannot order a cycle,
 	// so this keeps Preload("Stats") working while leaving the only foreign key
 	// on the child, where it already exists.
-	Match  *Match              `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
-	Player *Player             `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
-	Stats  *AnalysisEventStats `gorm:"foreignKey:AnalysisEventID;references:ID;constraint:OnDelete:CASCADE" json:"stats,omitempty"`
+	Match     *Match              `gorm:"foreignKey:MatchID;constraint:OnDelete:CASCADE" json:"match,omitempty"`
+	Player    *Player             `gorm:"foreignKey:PlayerID" json:"player,omitempty"`
+	EventType *EventType          `gorm:"foreignKey:EventTypeID" json:"event_type,omitempty"`
+	Stats     *AnalysisEventStats `gorm:"foreignKey:AnalysisEventID;references:ID;constraint:OnDelete:CASCADE" json:"stats,omitempty"`
 }
 
 // TableName specifies the table name for GORM

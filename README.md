@@ -22,12 +22,12 @@ migrate -path migrations -database "$DATABASE_URL" up
 go run main.go           # listens on :6767
 ```
 
-The server builds its connection string from the individual `DB_*` variables in
-`.env`; `golang-migrate` takes a single URL. Keep them pointed at the same
-database:
+If `DATABASE_URL` is set, the server uses it directly. Otherwise it builds its
+connection string from the individual `DB_*` variables in `.env`.
+`golang-migrate` also takes a single URL, so keep migration commands pointed at
+the same database:
 
 ```bash
-# must match DB_NAME / DB_USER / DB_HOST / DB_PORT in .env
 export DATABASE_URL="postgres://postgres:password@localhost:5432/afrigoals?sslmode=disable"
 ```
 
@@ -37,6 +37,43 @@ another, and the first symptom is `relation "users" does not exist` at boot.
 The server refuses to start unless `JWT_SECRET_KEY`, `ADMIN_EMAIL` and
 `ADMIN_PASSWORD` are set. That is deliberate: booting with a default signing key
 or an unusable administrator account is worse than not booting at all.
+
+## Cloudflare R2 analyst videos
+
+Analyst video uploads use a direct browser-to-R2 flow. The API signs a short-lived
+PUT URL, the browser uploads the video to R2, then the API stores the public URL
+in `videos` and `match_videos`.
+
+Set these environment variables:
+
+```bash
+R2_ENDPOINT="https://1bee280eb770a22064a690a3db2308f9.r2.cloudflarestorage.com/afrigoalsanalyst"
+R2_BUCKET="afrigoalsanalyst"
+R2_ACCESS_KEY_ID="..."
+R2_SECRET_ACCESS_KEY="..."
+R2_PUBLIC_BASE_URL="https://pub-7d57caf25196485aba8ed9278def145d.r2.dev"
+```
+
+`R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` must come from an R2
+S3-compatible API token/key pair. A Cloudflare account API token JSON object is
+not enough for this signer, even if it has R2 write permissions.
+
+For production, replace `R2_PUBLIC_BASE_URL` with your custom R2 domain, for
+example `https://media.afrigoals.com`, after it is connected to the bucket.
+
+The R2 bucket CORS policy must allow the frontend origin to `PUT` objects:
+
+```json
+[
+  {
+    "AllowedOrigins": ["http://localhost:3000", "https://your-frontend-domain.com"],
+    "AllowedMethods": ["PUT", "GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
 
 ## Database migrations
 

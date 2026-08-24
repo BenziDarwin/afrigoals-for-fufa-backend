@@ -15,34 +15,9 @@ import (
 var DB *gorm.DB
 
 func ConnectDB() *gorm.DB {
-	// Create variables for default values
-	defaultHost := "localhost"
-	defaultUser := "postgres"
-	defaultPassword := "yourpassword"
-	defaultDBName := "registry_db"
-	defaultSSLMode := "disable"
-	port := getEnv("DB_PORT", nil)
-
-	var dsn string
-	if port != "" {
-		dsn = fmt.Sprintf(
-			"host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
-			getEnv("DB_HOST", &defaultHost),
-			getEnv("DB_USER", &defaultUser),
-			getEnv("DB_PASSWORD", &defaultPassword),
-			getEnv("DB_NAME", &defaultDBName),
-			port,
-			getEnv("DB_SSLMODE", &defaultSSLMode),
-		)
-	} else {
-		dsn = fmt.Sprintf(
-			"host=%s user=%s password=%s dbname=%s sslmode=%s",
-			getEnv("DB_HOST", &defaultHost),
-			getEnv("DB_USER", &defaultUser),
-			getEnv("DB_PASSWORD", &defaultPassword),
-			getEnv("DB_NAME", &defaultDBName),
-			getEnv("DB_SSLMODE", &defaultSSLMode),
-		)
+	dsn := strings.TrimSpace(getEnv("DATABASE_URL", nil))
+	if dsn == "" {
+		dsn = buildDatabaseDSN()
 	}
 
 	var err error
@@ -92,6 +67,7 @@ func ConnectDB() *gorm.DB {
 
 		// Video & analysis
 		&models.UploadSession{},
+		&models.EventType{},
 		&models.MatchVideo{},           // FK to Match
 		&models.Video{},                // FK to Match
 		&models.Clip{},                 // FK to Match & Video
@@ -104,6 +80,37 @@ func ConnectDB() *gorm.DB {
 		log.Fatal("AutoMigrate failed:", err)
 	}
 	return DB
+}
+
+func buildDatabaseDSN() string {
+	// Create variables for default values
+	defaultHost := "localhost"
+	defaultUser := "postgres"
+	defaultPassword := "yourpassword"
+	defaultDBName := "registry_db"
+	defaultSSLMode := "disable"
+	port := getEnv("DB_PORT", nil)
+
+	if port != "" {
+		return fmt.Sprintf(
+			"host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+			getEnv("DB_HOST", &defaultHost),
+			getEnv("DB_USER", &defaultUser),
+			getEnv("DB_PASSWORD", &defaultPassword),
+			getEnv("DB_NAME", &defaultDBName),
+			port,
+			getEnv("DB_SSLMODE", &defaultSSLMode),
+		)
+	}
+
+	return fmt.Sprintf(
+		"host=%s user=%s password=%s dbname=%s sslmode=%s",
+		getEnv("DB_HOST", &defaultHost),
+		getEnv("DB_USER", &defaultUser),
+		getEnv("DB_PASSWORD", &defaultPassword),
+		getEnv("DB_NAME", &defaultDBName),
+		getEnv("DB_SSLMODE", &defaultSSLMode),
+	)
 }
 
 func getEnv(key string, fallback *string) string {
