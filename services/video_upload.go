@@ -22,6 +22,8 @@ import (
 	"gorm.io/gorm"
 )
 
+var clipCutSemaphore = make(chan struct{}, 1)
+
 /*
 ===========================================================
 EXISTING SMALL-UPLOAD ENDPOINT (kept as-is)
@@ -656,8 +658,6 @@ func CutClipByWindow(c *fiber.Ctx) error {
 
 	matchID := c.Params("match_id")
 	matchIDUint := mustParseUint(matchID)
-
-	// prevent match_id=0
 	if matchIDUint == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid match_id",
@@ -676,7 +676,6 @@ func CutClipByWindow(c *fiber.Ctx) error {
 		})
 	}
 
-	// ✅ ADDED: basic validation
 	if req.EventID == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid event_id",
@@ -689,7 +688,6 @@ func CutClipByWindow(c *fiber.Ctx) error {
 		req.PostSeconds = 0
 	}
 
-	// Get the event
 	var event models.AnalysisEvent
 	if err := database.DB.
 		Where("match_id = ? AND id = ?", matchIDUint, req.EventID).
@@ -699,7 +697,40 @@ func CutClipByWindow(c *fiber.Ctx) error {
 		})
 	}
 
-	// Calculate clip window
+	var existingClip models.Clip
+	if err := database.DB.
+		Where("match_id = ? AND event_id = ?", matchIDUint, req.EventID).
+		First(&existingClip).Error; err == nil {
+		statusCode := fiber.StatusOK
+		status := "ready"
+		if existingClip.ClipURL == nil || strings.TrimSpace(*existingClip.ClipURL) == "" {
+			statusCode = fiber.StatusAccepted
+			status = "processing"
+			existingEndSec := existingClip.StartSec + 1
+			if existingClip.EndSec != nil {
+				existingEndSec = *existingClip.EndSec
+			}
+			existingDurationSec := existingEndSec - existingClip.StartSec
+			if existingDurationSec <= 0 {
+				existingDurationSec = 1
+			}
+			go completeClipCut(matchIDUint, req.EventID, existingClip.ID, existingClip.StartSec, existingDurationSec)
+		}
+		return c.Status(statusCode).JSON(fiber.Map{
+			"success": true,
+			"data": fiber.Map{
+				"clip":     existingClip,
+				"existing": true,
+				"status":   status,
+			},
+		})
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error":   "Failed to check existing clip",
+			"details": err.Error(),
+		})
+	}
+
 	startSec := int(event.TimestampSeconds) - req.PreSeconds
 	if startSec < 0 {
 		startSec = 0
@@ -710,13 +741,11 @@ func CutClipByWindow(c *fiber.Ctx) error {
 		durationSec = 1
 	}
 
-	// Generate clip title
 	clipTitle := fmt.Sprintf("%s", event.Type)
 	if event.PlayerName != nil && *event.PlayerName != "Team Event" {
 		clipTitle = fmt.Sprintf("%s - %s", event.Type, *event.PlayerName)
 	}
 
-	// Create clip (DB first so we can name the file using clip.ID)
 	clip := models.Clip{
 		MatchID:   matchIDUint,
 		VideoID:   event.VideoID,
@@ -733,22 +762,47 @@ func CutClipByWindow(c *fiber.Ctx) error {
 		})
 	}
 
-	// ✅ ADDED: ensure clips directory exists
+	go completeClipCut(matchIDUint, req.EventID, clip.ID, startSec, durationSec)
+
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"clip":   clip,
+			"status": "processing",
+		},
+	})
+}
+
+func completeClipCut(matchID uint, eventID uint, clipID uint, startSec int, durationSec int) {
+	clipCutSemaphore <- struct{}{}
+	defer func() { <-clipCutSemaphore }()
+
+	var clip models.Clip
+	if err := database.DB.Where("match_id = ? AND id = ?", matchID, clipID).First(&clip).Error; err != nil {
+		return
+	}
+
+	var event models.AnalysisEvent
+	if err := database.DB.Where("match_id = ? AND id = ?", matchID, eventID).First(&event).Error; err != nil {
+		_ = database.DB.Delete(&clip).Error
+		return
+	}
+
+	if event.VideoID == nil || *event.VideoID == 0 {
+		_ = database.DB.Delete(&clip).Error
+		return
+	}
+
 	clipsDir := "./uploads/clips"
 	if err := os.MkdirAll(clipsDir, 0755); err != nil {
 		_ = database.DB.Delete(&clip).Error
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to create clips directory",
-		})
+		return
 	}
 
-	// ✅ ADDED: resolve the input video path from the video record referenced by event.VideoID
 	var v models.Video
-	if err := database.DB.Where("match_id = ? AND id = ?", matchIDUint, event.VideoID).First(&v).Error; err != nil {
+	if err := database.DB.Where("match_id = ? AND id = ?", matchID, *event.VideoID).First(&v).Error; err != nil {
 		_ = database.DB.Delete(&clip).Error
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "Video not found for this event",
-		})
+		return
 	}
 
 	var videoURL string
@@ -758,64 +812,42 @@ func CutClipByWindow(c *fiber.Ctx) error {
 		videoURL = v.URL
 	} else {
 		_ = database.DB.Delete(&clip).Error
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Video URL missing for this event",
-		})
+		return
 	}
 
 	inputPath, isLocal, ok := videoURLToClipInput(videoURL)
 	if !ok {
 		_ = database.DB.Delete(&clip).Error
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Video URL is not usable for clip cutting",
-		})
+		return
 	}
 
 	if isLocal {
 		if _, err := os.Stat(inputPath); err != nil {
 			_ = database.DB.Delete(&clip).Error
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-				"error":   "Video file not found on disk",
-				"details": inputPath,
-			})
+			return
 		}
 	}
 
 	if !isLocal && strings.TrimSpace(inputPath) == "" {
 		_ = database.DB.Delete(&clip).Error
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Video URL missing for clip cutting"})
+		return
 	}
 
-	// ✅ ADDED: run ffmpeg to actually generate the clip file (browser-safe mp4 + faststart)
 	outFile := fmt.Sprintf("clip_%d.mp4", clip.ID)
 	outPath := filepath.Join(clipsDir, outFile)
 
 	if err := ffmpegCutClipToH264Faststart(inputPath, outPath, startSec, durationSec); err != nil {
 		_ = os.Remove(outPath)
 		_ = database.DB.Delete(&clip).Error
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error":   "ffmpeg clip cut failed",
-			"details": err.Error(),
-		})
+		return
 	}
 
-	// ✅ Now generate a REAL clip URL that exists in /uploads/clips/
 	clipURL := "/uploads/clips/" + outFile
 	clip.ClipURL = &clipURL
-
-	// Update the clip with URL
 	database.DB.Save(&clip)
 
-	// Also update the event with clip URL
 	event.ClipURL = &clipURL
 	database.DB.Save(&event)
-
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"success": true,
-		"data": fiber.Map{
-			"clip": clip,
-		},
-	})
 }
 
 /*

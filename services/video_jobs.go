@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -260,6 +261,21 @@ func UploadMatchVideoToModelsAndStoreJob(c *fiber.Ctx) error {
 	}
 	defer f.Close()
 
+	videoTmp, err := os.CreateTemp("", "afrigoals-model-video-*"+filepath.Ext(fileHeader.Filename))
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to create temp video file"})
+	}
+	videoTmpPath := videoTmp.Name()
+	defer os.Remove(videoTmpPath)
+
+	if _, err := io.Copy(videoTmp, f); err != nil {
+		_ = videoTmp.Close()
+		return c.Status(500).JSON(fiber.Map{"error": "failed to save upload for model processing"})
+	}
+	if err := videoTmp.Close(); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to finalize temp video file"})
+	}
+
 	// forward to model server
 	modelURL := strings.TrimSpace(os.Getenv("MODEL_SERVER_UPLOAD_URL"))
 	if modelURL == "" {
@@ -273,12 +289,44 @@ func UploadMatchVideoToModelsAndStoreJob(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to create multipart"})
 	}
-	if _, err := io.Copy(part, f); err != nil {
+	videoFile, err := os.Open(videoTmpPath)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to reopen upload for model forwarding"})
+	}
+	defer videoFile.Close()
+	if _, err := io.Copy(part, videoFile); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to stream file"})
 	}
 
 	_ = writer.WriteField("match_id", fmt.Sprintf("%d", matchID))
 	_ = writer.WriteField("requested_by_user_id", fmt.Sprintf("%d", userID))
+	_ = writer.WriteField("use_commentary", "true")
+
+	audioTmp, err := os.CreateTemp("", "afrigoals-commentary-*.mp3")
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to create temp commentary file"})
+	}
+	audioTmpPath := audioTmp.Name()
+	_ = audioTmp.Close()
+	defer os.Remove(audioTmpPath)
+
+	if hasCommentary, err := extractCommentaryAudioIfPresent(videoTmpPath, audioTmpPath); err != nil {
+		_ = writer.WriteField("commentary_error", err.Error())
+	} else if hasCommentary {
+		audioPart, err := writer.CreateFormFile("commentary_audio", "commentary.mp3")
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "failed to create commentary multipart"})
+		}
+		audioFile, err := os.Open(audioTmpPath)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "failed to open commentary audio"})
+		}
+		defer audioFile.Close()
+		if _, err := io.Copy(audioPart, audioFile); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "failed to stream commentary audio"})
+		}
+		_ = writer.WriteField("commentary_audio_format", "mp3")
+	}
 
 	if err := writer.Close(); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to finalize multipart"})

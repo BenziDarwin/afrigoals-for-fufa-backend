@@ -2,6 +2,7 @@
 package services
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"strings"
@@ -198,14 +199,24 @@ func CreateAnalysisEvent(c *fiber.Ctx) error {
 
 	if err := database.DB.Create(&event).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to create analysis event",
+			"error":   "Failed to create analysis event",
+			"details": err.Error(),
 		})
+	}
+
+	eventManifestKey, eventManifestWarning := "", ""
+	if key, err := saveAnalysisEventManifestToR2(context.Background(), event); err != nil {
+		eventManifestWarning = err.Error()
+	} else {
+		eventManifestKey = key
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"success": true,
 		"data": fiber.Map{
-			"event": event,
+			"event":                  event,
+			"event_manifest_key":     eventManifestKey,
+			"event_manifest_warning": eventManifestWarning,
 		},
 	})
 }
@@ -312,15 +323,26 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 	if len(updates) > 0 {
 		if err := database.DB.Model(&event).Updates(updates).Error; err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to update analysis event",
+				"error":   "Failed to update analysis event",
+				"details": err.Error(),
 			})
 		}
+	}
+
+	_ = database.DB.Where("match_id = ? AND id = ?", matchID, eventID).First(&event).Error
+	eventManifestKey, eventManifestWarning := "", ""
+	if key, err := saveAnalysisEventManifestToR2(context.Background(), event); err != nil {
+		eventManifestWarning = err.Error()
+	} else {
+		eventManifestKey = key
 	}
 
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": fiber.Map{
-			"event": event,
+			"event":                  event,
+			"event_manifest_key":     eventManifestKey,
+			"event_manifest_warning": eventManifestWarning,
 		},
 	})
 }
@@ -329,10 +351,14 @@ func DeleteAnalysisEvent(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 	eventID := c.Params("id")
 
+	var event models.AnalysisEvent
+	_ = database.DB.Where("match_id = ? AND id = ?", matchID, eventID).First(&event).Error
+
 	result := database.DB.Where("match_id = ? AND id = ?", matchID, eventID).Delete(&models.AnalysisEvent{})
 	if result.Error != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to delete analysis event",
+			"error":   "Failed to delete analysis event",
+			"details": result.Error.Error(),
 		})
 	}
 
@@ -342,8 +368,18 @@ func DeleteAnalysisEvent(c *fiber.Ctx) error {
 		})
 	}
 
+	eventManifestWarning := ""
+	if event.ID != 0 {
+		if err := deleteAnalysisEventManifestFromR2(context.Background(), event.MatchID, event.ID); err != nil {
+			eventManifestWarning = err.Error()
+		}
+	}
+
 	return c.JSON(fiber.Map{
 		"success": true,
 		"message": "Analysis event deleted",
+		"data": fiber.Map{
+			"event_manifest_warning": eventManifestWarning,
+		},
 	})
 }
