@@ -67,6 +67,7 @@ func ConnectDB() *gorm.DB {
 
 		// Video & analysis
 		&models.UploadSession{},
+		&models.MatchVideoUpload{},
 		&models.EventType{},
 		&models.MatchVideo{},           // FK to Match
 		&models.Video{},                // FK to Match

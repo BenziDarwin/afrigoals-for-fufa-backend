@@ -309,6 +309,15 @@ func SetupRoutes(app *fiber.App) {
 		videos.Get("", getCache, services.ListVideos)
 		videos.Get("/:id", getCache, services.GetVideoByID)
 
+		multipartVideos := videos.Group("/multipart")
+		multipartVideos.Use(middleware.DataAnalystOrAbove())
+		{
+			multipartVideos.Post("/initiate", services.InitiateR2MultipartVideoUpload)
+			multipartVideos.Post("/parts", services.SignR2MultipartUploadParts)
+			multipartVideos.Post("/complete", services.CompleteR2MultipartVideoUpload)
+			multipartVideos.Post("/cancel", services.CancelR2MultipartVideoUpload)
+		}
+
 		moderatorVideos := videos.Group("")
 		moderatorVideos.Use(middleware.LeagueAdminOrAbove())
 		{

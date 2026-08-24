@@ -40,9 +40,13 @@ or an unusable administrator account is worse than not booting at all.
 
 ## Cloudflare R2 analyst videos
 
-Analyst video uploads use a direct browser-to-R2 flow. The API signs a short-lived
-PUT URL, the browser uploads the video to R2, then the API stores the public URL
-in `videos` and `match_videos`.
+Analyst video uploads use direct browser-to-R2 flows. The API signs short-lived
+S3-compatible URLs, the browser uploads the video to R2, then the API stores the
+public URL in `videos` and `match_videos`.
+
+- Files under 500 MB use a single presigned `PUT`.
+- Files 500 MB and above use R2 multipart upload with 50 MB parts and browser
+  concurrency of three parts.
 
 Set these environment variables:
 
@@ -74,6 +78,17 @@ The R2 bucket CORS policy must allow the frontend origin to `PUT` objects:
   }
 ]
 ```
+
+Multipart endpoints:
+
+```text
+POST /api/v1/videos/multipart/initiate
+POST /api/v1/videos/multipart/parts
+POST /api/v1/videos/multipart/complete
+POST /api/v1/videos/multipart/cancel
+```
+
+The browser receives only signed part URLs. R2 credentials remain server-side.
 
 ## Database migrations
 
