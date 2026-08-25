@@ -15,9 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"net/http"
-
 	"afrigoals.com/database"
 	"afrigoals.com/middleware"
 	"afrigoals.com/models"
@@ -1019,50 +1016,6 @@ HELPERS (existing + chunked helpers)
 ===========================================================
 */
 
-func downloadVideo(
-	url string,
-	output string,
-) error {
-
-	client := &http.Client{
-
-		Timeout: 3 * time.Hour,
-	}
-
-	resp, err := client.Get(url)
-
-	if err != nil {
-		return err
-	}
-
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-
-		return fmt.Errorf(
-			"download returned status %d",
-			resp.StatusCode,
-		)
-
-	}
-
-	file, err := os.Create(output)
-
-	if err != nil {
-
-		return err
-
-	}
-
-	defer file.Close()
-
-	_, err = io.Copy(
-		file,
-		resp.Body,
-	)
-
-	return err
-}
 
 func mustParseUint(s string) uint {
 	v, _ := strconv.ParseUint(s, 10, 32)

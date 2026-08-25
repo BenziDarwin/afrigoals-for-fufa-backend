@@ -15,30 +15,21 @@ import (
 	"afrigoals.com/models"
 )
 
-
 // ProcessClip generates one clip
 func ProcessClip(clipID uint) {
 
-
 	var clip models.Clip
-
 
 	if err := database.DB.First(&clip, clipID).Error; err != nil {
 		return
 	}
 
-
-
 	clip.Status = "processing"
 	database.DB.Save(&clip)
 
-
-
 	outputDir := "/tmp/clips"
 
-	os.MkdirAll(outputDir,0755)
-
-
+	os.MkdirAll(outputDir, 0755)
 
 	outputFile := filepath.Join(
 		outputDir,
@@ -48,14 +39,11 @@ func ProcessClip(clipID uint) {
 		),
 	)
 
-
-
 	// Get original video source
 
 	videoURL, err := getVideoPath(
 		clip.MatchID,
 	)
-
 
 	if err != nil {
 
@@ -67,20 +55,15 @@ func ProcessClip(clipID uint) {
 		return
 	}
 
-
-
 	// Download R2 video locally before FFmpeg
 
 	inputFile := videoURL
 
 	removeInput := false
 
-
-
 	if len(videoURL) > 4 &&
-		(videoURL[:4]=="http" ||
-		 videoURL[:5]=="https") {
-
+		(videoURL[:4] == "http" ||
+			videoURL[:5] == "https") {
 
 		inputFile = filepath.Join(
 			outputDir,
@@ -90,13 +73,10 @@ func ProcessClip(clipID uint) {
 			),
 		)
 
-
-
 		err := downloadVideo(
 			videoURL,
 			inputFile,
 		)
-
 
 		if err != nil {
 
@@ -111,14 +91,11 @@ func ProcessClip(clipID uint) {
 			return
 		}
 
-
-		removeInput=true
+		removeInput = true
 
 	}
 
-
-
-	defer func(){
+	defer func() {
 
 		if removeInput {
 			os.Remove(inputFile)
@@ -126,11 +103,7 @@ func ProcessClip(clipID uint) {
 
 	}()
 
-
-
 	duration := 20
-
-
 
 	cmd := exec.Command(
 
@@ -144,48 +117,36 @@ func ProcessClip(clipID uint) {
 			clip.StartSec,
 		),
 
-
 		"-i",
 
 		inputFile,
-
 
 		"-t",
 
 		strconv.Itoa(duration),
 
-
 		"-c:v",
 
 		"libx264",
-
 
 		"-preset",
 
 		"veryfast",
 
-
 		"-c:a",
 
 		"aac",
-
 
 		"-movflags",
 
 		"+faststart",
 
-
 		outputFile,
 	)
 
-
-
-	output,err := cmd.CombinedOutput()
-
-
+	output, err := cmd.CombinedOutput()
 
 	if err != nil {
-
 
 		failClip(
 			&clip,
@@ -196,15 +157,10 @@ func ProcessClip(clipID uint) {
 			),
 		)
 
-
 		return
 	}
 
-
-
-
-
-	objectKey,url,err :=
+	objectKey, url, err :=
 		uploadClipFileToR2(
 
 			context.Background(),
@@ -216,10 +172,7 @@ func ProcessClip(clipID uint) {
 			outputFile,
 		)
 
-
-
 	if err != nil {
-
 
 		failClip(
 			&clip,
@@ -229,76 +182,54 @@ func ProcessClip(clipID uint) {
 		return
 	}
 
+	clip.ClipURL = &url
 
+	clip.ObjectKey = &objectKey
 
-	clip.ClipURL=&url
+	clip.Status = "completed"
 
-	clip.ObjectKey=&objectKey
-
-	clip.Status="completed"
-
-	clip.ErrorMessage=nil
-
+	clip.ErrorMessage = nil
 
 	database.DB.Save(&clip)
-
-
 
 	os.Remove(outputFile)
 
 }
 
-
-
-
-
 func failClip(
 	clip *models.Clip,
 	message string,
-){
+) {
 
-	clip.Status="failed"
+	clip.Status = "failed"
 
-	clip.ErrorMessage=&message
+	clip.ErrorMessage = &message
 
 	database.DB.Save(clip)
 
 }
-
-
-
-
 
 func downloadVideo(
 	url string,
 	output string,
 ) error {
 
+	client := &http.Client{
 
-	client:=&http.Client{
-
-		Timeout:3*time.Hour,
-
+		Timeout: 3 * time.Hour,
 	}
 
+	resp, err := client.Get(url)
 
-
-	resp,err:=client.Get(url)
-
-
-	if err!=nil{
+	if err != nil {
 
 		return err
 
 	}
 
-
-
 	defer resp.Body.Close()
 
-
-
-	if resp.StatusCode!=200{
+	if resp.StatusCode != 200 {
 
 		return fmt.Errorf(
 			"download returned status %d",
@@ -307,27 +238,68 @@ func downloadVideo(
 
 	}
 
+	file, err := os.Create(output)
 
-
-	file,err:=os.Create(output)
-
-
-	if err!=nil{
+	if err != nil {
 
 		return err
 
 	}
 
-
 	defer file.Close()
 
-
-
-	_,err=io.Copy(
+	_, err = io.Copy(
 		file,
 		resp.Body,
 	)
 
-
 	return err
+}
+
+// Get original match video location
+func getVideoPath(matchID uint) (string, error) {
+
+	var video models.Video
+
+
+	err := database.DB.
+		Where("match_id = ?", matchID).
+		First(&video).
+		Error
+
+
+	if err != nil {
+
+		return "",
+			fmt.Errorf(
+				"match video not found: %v",
+				err,
+			)
+	}
+
+
+
+	// Prefer R2 URL
+
+	if video.VideoURL != nil &&
+		*video.VideoURL != "" {
+
+		return *video.VideoURL, nil
+	}
+
+
+
+	if video.URL != "" {
+
+		return video.URL, nil
+	}
+
+
+
+	return "",
+		fmt.Errorf(
+			"video URL is empty for match %d",
+			matchID,
+		)
+
 }
