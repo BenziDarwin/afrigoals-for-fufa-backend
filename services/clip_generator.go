@@ -3,15 +3,17 @@ package services
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"afrigoals.com/database"
 	"afrigoals.com/models"
 )
-
 
 
 // ProcessClip generates one clip
@@ -21,26 +23,20 @@ func ProcessClip(clipID uint) {
 	var clip models.Clip
 
 
-	// Get clip record
 	if err := database.DB.First(&clip, clipID).Error; err != nil {
 		return
 	}
 
 
 
-	// Mark processing
-
 	clip.Status = "processing"
-
 	database.DB.Save(&clip)
 
 
 
-	// Ensure output directory exists
-
 	outputDir := "/tmp/clips"
 
-	os.MkdirAll(outputDir, 0755)
+	os.MkdirAll(outputDir,0755)
 
 
 
@@ -54,39 +50,87 @@ func ProcessClip(clipID uint) {
 
 
 
-	// Get original match video
+	// Get original video source
 
-	videoPath, err := getVideoPath(
+	videoURL, err := getVideoPath(
 		clip.MatchID,
 	)
 
 
 	if err != nil {
 
-
-		msg := err.Error()
-
-
-		clip.Status = "failed"
-
-		clip.ErrorMessage = &msg
-
-
-		database.DB.Save(&clip)
-
+		failClip(
+			&clip,
+			err.Error(),
+		)
 
 		return
 	}
 
 
 
-	// Default clip length
+	// Download R2 video locally before FFmpeg
+
+	inputFile := videoURL
+
+	removeInput := false
+
+
+
+	if len(videoURL) > 4 &&
+		(videoURL[:4]=="http" ||
+		 videoURL[:5]=="https") {
+
+
+		inputFile = filepath.Join(
+			outputDir,
+			fmt.Sprintf(
+				"source_%d.mp4",
+				clip.ID,
+			),
+		)
+
+
+
+		err := downloadVideo(
+			videoURL,
+			inputFile,
+		)
+
+
+		if err != nil {
+
+			failClip(
+				&clip,
+				fmt.Sprintf(
+					"download failed: %v",
+					err,
+				),
+			)
+
+			return
+		}
+
+
+		removeInput=true
+
+	}
+
+
+
+	defer func(){
+
+		if removeInput {
+			os.Remove(inputFile)
+		}
+
+	}()
+
+
 
 	duration := 20
 
 
-
-	// FFmpeg command
 
 	cmd := exec.Command(
 
@@ -103,7 +147,7 @@ func ProcessClip(clipID uint) {
 
 		"-i",
 
-		videoPath,
+		inputFile,
 
 
 		"-t",
@@ -116,93 +160,89 @@ func ProcessClip(clipID uint) {
 		"libx264",
 
 
+		"-preset",
+
+		"veryfast",
+
+
 		"-c:a",
 
 		"aac",
 
 
+		"-movflags",
+
+		"+faststart",
+
+
 		outputFile,
 	)
 
 
 
-	err = cmd.Run()
+	output,err := cmd.CombinedOutput()
 
 
 
 	if err != nil {
 
 
-		msg := err.Error()
-
-
-		clip.Status = "failed"
-
-		clip.ErrorMessage = &msg
-
-
-		database.DB.Save(&clip)
+		failClip(
+			&clip,
+			fmt.Sprintf(
+				"ffmpeg failed: %v %s",
+				err,
+				string(output),
+			),
+		)
 
 
 		return
-
 	}
 
 
 
 
 
-	// Upload to Cloudflare R2
+	objectKey,url,err :=
+		uploadClipFileToR2(
 
-	objectKey, url, err := uploadClipFileToR2(
+			context.Background(),
 
-		context.Background(),
+			clip.MatchID,
 
-		clip.MatchID,
+			clip.ID,
 
-		clip.ID,
-
-		outputFile,
-
-	)
+			outputFile,
+		)
 
 
 
 	if err != nil {
 
 
-		msg := err.Error()
-
-
-		clip.Status = "failed"
-
-		clip.ErrorMessage = &msg
-
-
-		database.DB.Save(&clip)
-
+		failClip(
+			&clip,
+			err.Error(),
+		)
 
 		return
-
 	}
 
 
 
+	clip.ClipURL=&url
 
-	// Save final URL
+	clip.ObjectKey=&objectKey
 
-	clip.ClipURL = &url
-	clip.ObjectKey = &objectKey
+	clip.Status="completed"
 
-	clip.Status = "completed"
-
+	clip.ErrorMessage=nil
 
 
 	database.DB.Save(&clip)
 
 
-
-	// optional cleanup
 
 	os.Remove(outputFile)
 
@@ -212,48 +252,82 @@ func ProcessClip(clipID uint) {
 
 
 
+func failClip(
+	clip *models.Clip,
+	message string,
+){
 
-// Generate video path from MatchVideo database
-func getVideoPath(matchID uint) (string,error) {
+	clip.Status="failed"
 
+	clip.ErrorMessage=&message
 
-	/*
-	
-	IMPORTANT:
-	This is temporary.
+	database.DB.Save(clip)
 
-	Next we replace this with:
-
-	Match
-	  |
-	MatchVideo
-	  |
-	R2 URL/path
-
-
-	*/
-
-
-	path := fmt.Sprintf(
-		"/uploads/matches/%d/video.mp4",
-		matchID,
-	)
+}
 
 
 
-	if _,err:=os.Stat(path);err!=nil{
 
 
-		return "",
-		fmt.Errorf(
-			"match video not found: %s",
-			path,
+func downloadVideo(
+	url string,
+	output string,
+) error {
+
+
+	client:=&http.Client{
+
+		Timeout:3*time.Hour,
+
+	}
+
+
+
+	resp,err:=client.Get(url)
+
+
+	if err!=nil{
+
+		return err
+
+	}
+
+
+
+	defer resp.Body.Close()
+
+
+
+	if resp.StatusCode!=200{
+
+		return fmt.Errorf(
+			"download returned status %d",
+			resp.StatusCode,
 		)
 
 	}
 
 
 
-	return path,nil
+	file,err:=os.Create(output)
 
+
+	if err!=nil{
+
+		return err
+
+	}
+
+
+	defer file.Close()
+
+
+
+	_,err=io.Copy(
+		file,
+		resp.Body,
+	)
+
+
+	return err
 }
