@@ -4,6 +4,7 @@ package services
 import (
 	"bytes"
 	"crypto/sha256"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
