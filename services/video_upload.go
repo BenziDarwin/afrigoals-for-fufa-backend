@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"net/http"
+
 	"afrigoals.com/database"
 	"afrigoals.com/middleware"
 	"afrigoals.com/models"
@@ -799,100 +801,216 @@ func shouldReprocessClip(clip models.Clip) bool {
 	return strings.HasPrefix(clipURL, "/uploads/clips/")
 }
 
-func completeClipCut(matchID uint, eventID uint, clipID uint, startSec int, durationSec int) {
+func completeClipCut(
+	matchID uint,
+	eventID uint,
+	clipID uint,
+	startSec int,
+	durationSec int,
+) {
+
 	clipCutSemaphore <- struct{}{}
-	defer func() { <-clipCutSemaphore }()
+	defer func() {
+		<-clipCutSemaphore
+	}()
 
 	var clip models.Clip
-	if err := database.DB.Where("match_id = ? AND id = ?", matchID, clipID).First(&clip).Error; err != nil {
+
+	if err := database.DB.
+		Where("match_id = ? AND id = ?", matchID, clipID).
+		First(&clip).Error; err != nil {
 		return
 	}
+
 	failClip := func(message string) {
+
 		clip.Status = "failed"
 		clip.ClipURL = nil
 		clip.ErrorMessage = &message
+
 		_ = database.DB.Save(&clip).Error
 	}
 
 	var event models.AnalysisEvent
-	if err := database.DB.Where("match_id = ? AND id = ?", matchID, eventID).First(&event).Error; err != nil {
+
+	if err := database.DB.
+		Where(
+			"match_id = ? AND id = ?",
+			matchID,
+			eventID,
+		).
+		First(&event).Error; err != nil {
+
 		failClip("Event not found")
 		return
 	}
 
-	if event.VideoID == nil || *event.VideoID == 0 {
+	if event.VideoID == nil {
+
 		failClip("Event has no linked video")
 		return
 	}
 
-	clipsDir := filepath.Join(os.TempDir(), "afrigoals-clips")
-	if err := os.MkdirAll(clipsDir, 0755); err != nil {
-		failClip(err.Error())
-		return
-	}
+	var video models.Video
 
-	var v models.Video
-	if err := database.DB.Where("match_id = ? AND id = ?", matchID, *event.VideoID).First(&v).Error; err != nil {
+	if err := database.DB.
+		Where(
+			"match_id = ? AND id = ?",
+			matchID,
+			*event.VideoID,
+		).
+		First(&video).Error; err != nil {
+
 		failClip("Match video not found")
 		return
 	}
 
 	var videoURL string
-	if v.VideoURL != nil && *v.VideoURL != "" {
-		videoURL = *v.VideoURL
-	} else if strings.TrimSpace(v.URL) != "" {
-		videoURL = v.URL
+
+	if video.VideoURL != nil &&
+		*video.VideoURL != "" {
+
+		videoURL = *video.VideoURL
+
 	} else {
-		failClip("Match video has no URL")
+
+		videoURL = video.URL
+
+	}
+
+	if strings.TrimSpace(videoURL) == "" {
+
+		failClip("Video URL missing")
 		return
 	}
 
-	inputPath, isLocal, ok := videoURLToClipInput(videoURL)
-	if !ok {
-		failClip("Match video URL is not available for clipping")
+	clipsDir := filepath.Join(
+		os.TempDir(),
+		"afrigoals-clips",
+	)
+
+	if err := os.MkdirAll(
+		clipsDir,
+		0755,
+	); err != nil {
+
+		failClip(err.Error())
 		return
 	}
 
-	if isLocal {
-		if _, err := os.Stat(inputPath); err != nil {
-			failClip(err.Error())
+	/*
+		IMPORTANT FIX:
+
+		If video is on R2,
+		download locally first.
+
+		Do not let FFmpeg read remote URL.
+	*/
+
+	inputPath := videoURL
+
+	removeInput := false
+
+	if strings.HasPrefix(
+		videoURL,
+		"http://",
+	) ||
+		strings.HasPrefix(
+			videoURL,
+			"https://",
+		) {
+
+		inputPath = filepath.Join(
+			clipsDir,
+			fmt.Sprintf(
+				"source_%d.mp4",
+				clip.ID,
+			),
+		)
+
+		err := downloadVideo(
+			videoURL,
+			inputPath,
+		)
+
+		if err != nil {
+
+			failClip(
+				fmt.Sprintf(
+					"video download failed: %v",
+					err,
+				),
+			)
+
 			return
 		}
+
+		removeInput = true
+
 	}
 
-	if !isLocal && strings.TrimSpace(inputPath) == "" {
-		failClip("Match video URL is empty")
-		return
-	}
+	outputPath := filepath.Join(
+		clipsDir,
+		fmt.Sprintf(
+			"clip_%d.mp4",
+			clip.ID,
+		),
+	)
 
-	outFile := fmt.Sprintf("clip_%d.mp4", clip.ID)
-	outPath := filepath.Join(clipsDir, outFile)
+	defer func() {
 
-	if err := ffmpegCutClipToH264Faststart(inputPath, outPath, startSec, durationSec); err != nil {
-		_ = os.Remove(outPath)
-		failClip(err.Error())
-		return
-	}
+		if removeInput {
+			os.Remove(inputPath)
+		}
 
-	objectKey, r2ClipURL, err := uploadClipFileToR2(context.Background(), matchID, clip.ID, outPath)
-	_ = os.Remove(outPath)
+		os.Remove(outputPath)
+
+	}()
+
+	err := ffmpegCutClipToH264Faststart(
+		inputPath,
+		outputPath,
+		startSec,
+		durationSec,
+	)
+
 	if err != nil {
+
 		failClip(err.Error())
 		return
 	}
-	if strings.TrimSpace(r2ClipURL) == "" {
-		failClip("R2 upload completed without a public clip URL")
+
+	objectKey, clipURL, err :=
+		uploadClipFileToR2(
+			context.Background(),
+			matchID,
+			clip.ID,
+			outputPath,
+		)
+
+	if err != nil {
+
+		failClip(
+			fmt.Sprintf(
+				"R2 upload failed: %v",
+				err,
+			),
+		)
+
 		return
 	}
 
-	clip.ClipURL = &r2ClipURL
 	clip.ObjectKey = &objectKey
+	clip.ClipURL = &clipURL
 	clip.Status = "completed"
 	clip.ErrorMessage = nil
+
 	database.DB.Save(&clip)
 
-	event.ClipURL = &r2ClipURL
+	event.ClipURL = &clipURL
+
 	database.DB.Save(&event)
+
 }
 
 /*
@@ -900,6 +1018,51 @@ func completeClipCut(matchID uint, eventID uint, clipID uint, startSec int, dura
 HELPERS (existing + chunked helpers)
 ===========================================================
 */
+
+func downloadVideo(
+	url string,
+	output string,
+) error {
+
+	client := &http.Client{
+
+		Timeout: 3 * time.Hour,
+	}
+
+	resp, err := client.Get(url)
+
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+
+		return fmt.Errorf(
+			"download returned status %d",
+			resp.StatusCode,
+		)
+
+	}
+
+	file, err := os.Create(output)
+
+	if err != nil {
+
+		return err
+
+	}
+
+	defer file.Close()
+
+	_, err = io.Copy(
+		file,
+		resp.Body,
+	)
+
+	return err
+}
 
 func mustParseUint(s string) uint {
 	v, _ := strconv.ParseUint(s, 10, 32)
@@ -966,36 +1129,72 @@ func ffmpegTranscodeToH264Faststart(inputPath, outputPath string) error {
 	return nil
 }
 
-func ffmpegCutClipToH264Faststart(inputPath, outputPath string, startSec int, durationSec int) error {
-	_ = os.MkdirAll(filepath.Dir(outputPath), 0755)
+func ffmpegCutClipToH264Faststart(
+	inputPath string,
+	outputPath string,
+	startSec int,
+	durationSec int,
+) error {
 
 	if startSec < 0 {
 		startSec = 0
 	}
+
 	if durationSec <= 0 {
-		durationSec = 1
+		durationSec = 20
 	}
 
 	cmd := exec.Command(
+
 		"ffmpeg",
+
 		"-y",
-		"-ss", strconv.Itoa(startSec),
-		"-i", inputPath,
-		"-t", strconv.Itoa(durationSec),
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-crf", "23",
-		"-pix_fmt", "yuv420p",
-		"-c:a", "aac",
-		"-b:a", "128k",
-		"-movflags", "+faststart",
+
+		"-ss",
+		strconv.Itoa(startSec),
+
+		"-i",
+		inputPath,
+
+		"-t",
+		strconv.Itoa(durationSec),
+
+		"-c:v",
+		"libx264",
+
+		"-preset",
+		"veryfast",
+
+		"-crf",
+		"23",
+
+		"-pix_fmt",
+		"yuv420p",
+
+		"-c:a",
+		"aac",
+
+		"-b:a",
+		"128k",
+
+		"-movflags",
+		"+faststart",
+
 		outputPath,
 	)
 
 	out, err := cmd.CombinedOutput()
+
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+
+		return fmt.Errorf(
+			"ffmpeg failed: %v\n%s",
+			err,
+			string(out),
+		)
+
 	}
+
 	return nil
 }
 
