@@ -843,6 +843,11 @@ func completeClipCut(matchID uint, eventID uint, clipID uint, startSec int, dura
 	}
 
 	clipURL := "/uploads/clips/" + outFile
+	if _, r2ClipURL, err := uploadClipFileToR2(context.Background(), matchID, clip.ID, outPath); err == nil && strings.TrimSpace(r2ClipURL) != "" {
+		clipURL = r2ClipURL
+		_ = os.Remove(outPath)
+	}
+
 	clip.ClipURL = &clipURL
 	database.DB.Save(&clip)
 
