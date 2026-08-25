@@ -48,6 +48,27 @@ func CanManageClub(user *models.User, clubID uint) bool {
 	}
 }
 
+// CanManageLeague reports whether user may administer leagueID.
+//
+//	afrigoals_admin  any league
+//	league admin     only their own league
+func CanManageLeague(user *models.User, leagueID uint) bool {
+	if user == nil || leagueID == 0 {
+		return false
+	}
+
+	switch user.Role {
+	case models.AfrigoalsAdmin:
+		return true
+
+	case models.LeagueAdmin:
+		return user.LeagueID != nil && *user.LeagueID == leagueID
+
+	default:
+		return false
+	}
+}
+
 // CanManagePlayer reports whether user may administer a player. A player with
 // no club can only be managed by a platform admin, because there is no
 // club or league to scope ownership against.

@@ -593,13 +593,19 @@ func GetLeagueStatistics(c *fiber.Ctx) error {
 		totalPlayers += playerCount
 	}
 
+	var analystCount int64
+	database.DB.Model(&models.User{}).
+		Where("league_id = ? AND role = ?", league.ID, models.DataAnalyst).
+		Count(&analystCount)
+
 	return c.JSON(fiber.Map{
-		"league_id":    league.ID,
-		"league_name":  league.Name,
-		"country":      league.Country,
-		"club_count":   len(league.Clubs),
-		"user_count":   len(league.Users),
-		"player_count": totalPlayers,
-		"description":  league.Description,
+		"league_id":     league.ID,
+		"league_name":   league.Name,
+		"country":       league.Country,
+		"club_count":    len(league.Clubs),
+		"user_count":    len(league.Users),
+		"player_count":  totalPlayers,
+		"analyst_count": analystCount,
+		"description":   league.Description,
 	})
 }

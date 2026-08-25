@@ -228,26 +228,94 @@ func DownloadTeamPerformanceReportPDF(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid match ID"})
 	}
 
-	var match models.Match
-	if err := database.DB.
-		Preload("HomeClub").
-		Preload("AwayClub").
-		First(&match, uint(matchID)).Error; err != nil {
+	payload, err := computeTeamPerformanceSummaries(uint(matchID))
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Match not found"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Database error"})
 	}
+	if payload.TotalReports == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "No player analysis reports found for this match"})
+	}
+
+	pdf := buildTeamPerformancePDF(payload)
+	filename := fmt.Sprintf("team_performance_match_%d.pdf", payload.Match.ID)
+
+	c.Set("Content-Type", "application/pdf")
+	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Set("Content-Length", strconv.Itoa(len(pdf)))
+	c.Set("Cache-Control", "no-store")
+	return c.Send(pdf)
+}
+
+// teamPerformanceReportPayload is the single source of truth for "what does
+// this match's team performance look like" - both the PDF download above and
+// GetMatchReportReview's JSON response are built from it.
+type teamPerformanceReportPayload struct {
+	Match        models.Match                  `json:"match"`
+	Teams        []teamPerformanceSummary      `json:"teams"`
+	Reports      []models.PlayerAnalysisReport `json:"-"`
+	TotalReports int                           `json:"total_reports"`
+	TotalEvents  int                           `json:"total_events"`
+	TotalScore   int                           `json:"total_score"`
+}
+
+type playerPerformanceBreakdown struct {
+	PlayerID        uint           `json:"player_id"`
+	PlayerName      string         `json:"player_name"`
+	Score           int            `json:"score"`
+	EventCount      int            `json:"event_count"`
+	EventTypeCounts map[string]int `json:"event_type_counts"`
+}
+
+// physicalStatsAverage is nil on a team's summary when it has no
+// AnalysisEventStats rows at all (no AI job has run yet) - never a
+// fabricated zero. Even when present, individual averages may themselves be
+// nil if that specific field was nil on every contributing row.
+type physicalStatsAverage struct {
+	SampleSize          int      `json:"sample_size"`
+	AvgDistanceCoveredM *float64 `json:"avg_distance_covered_m"`
+	AvgSpeedKmh         *float64 `json:"avg_speed_kmh"`
+	AvgMaxSpeedKmh      *float64 `json:"avg_max_speed_kmh"`
+	AvgSprints          *float64 `json:"avg_sprints"`
+	AvgTouches          *float64 `json:"avg_touches"`
+}
+
+type teamPerformanceSummary struct {
+	ClubID          uint                         `json:"club_id"`
+	TeamName        string                       `json:"team_name"`
+	IsHomeTeam      bool                         `json:"is_home_team"`
+	Players         int                          `json:"players"`
+	Reports         int                          `json:"reports"`
+	Events          int                          `json:"events"`
+	Score           int                          `json:"score"`
+	TopPlayer       string                       `json:"top_player"`
+	TopPlayerScore  int                          `json:"top_player_score"`
+	PlayerBreakdown []playerPerformanceBreakdown `json:"player_breakdown"`
+	EventTypeCounts map[string]int               `json:"event_type_counts"`
+	ZoneFrequency   map[string]int               `json:"zone_frequency"`
+	PhysicalStats   *physicalStatsAverage        `json:"physical_stats"`
+}
+
+// computeTeamPerformanceSummaries aggregates a match's PlayerAnalysisReport,
+// AnalysisEvent, and AnalysisEventStats rows into a per-club summary. Teams
+// are keyed by club_id (not name - two blank/unknown names must not merge).
+func computeTeamPerformanceSummaries(matchID uint) (*teamPerformanceReportPayload, error) {
+	var match models.Match
+	if err := database.DB.
+		Preload("HomeClub").
+		Preload("AwayClub").
+		First(&match, matchID).Error; err != nil {
+		return nil, err
+	}
 
 	var reports []models.PlayerAnalysisReport
 	if err := database.DB.
-		Where("match_id = ?", uint(matchID)).
+		Where("match_id = ?", matchID).
 		Order("score DESC, event_count DESC, player_name ASC").
 		Find(&reports).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list player analysis reports"})
-	}
-	if len(reports) == 0 {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "No player analysis reports found for this match"})
+		return nil, err
 	}
 
 	var players []models.Player
@@ -255,17 +323,229 @@ func DownloadTeamPerformanceReportPDF(c *fiber.Ctx) error {
 		Preload("Club").
 		Where("club_id IN ?", []uint{match.HomeClubID, match.AwayClubID}).
 		Find(&players).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list match players"})
+		return nil, err
 	}
 
-	pdf := buildTeamPerformancePDF(match, reports, players)
-	filename := fmt.Sprintf("team_performance_match_%d.pdf", match.ID)
+	var events []models.AnalysisEvent
+	if err := database.DB.
+		Where("match_id = ?", matchID).
+		Find(&events).Error; err != nil {
+		return nil, err
+	}
 
-	c.Set("Content-Type", "application/pdf")
-	c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
-	c.Set("Content-Length", strconv.Itoa(len(pdf)))
-	c.Set("Cache-Control", "no-store")
-	return c.Send(pdf)
+	var stats []models.AnalysisEventStats
+	if err := database.DB.
+		Joins("JOIN analysis_events ON analysis_events.id = analysis_event_stats.analysis_event_id").
+		Where("analysis_events.match_id = ?", matchID).
+		Find(&stats).Error; err != nil {
+		return nil, err
+	}
+
+	playerClub := make(map[uint]uint, len(players))
+	for _, p := range players {
+		playerClub[p.ID] = p.ClubID
+	}
+	eventPlayer := make(map[uint]uint, len(events))
+	eventClub := make(map[uint]uint, len(events))
+	for _, e := range events {
+		pid := uintOrZero(e.PlayerID)
+		eventPlayer[e.ID] = pid
+		if clubID, ok := playerClub[pid]; ok {
+			eventClub[e.ID] = clubID
+		}
+	}
+
+	teams := map[uint]*teamPerformanceSummary{}
+	ensureTeam := func(clubID uint, name string, isHome bool) *teamPerformanceSummary {
+		if t, ok := teams[clubID]; ok {
+			return t
+		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			name = "Unknown team"
+		}
+		t := &teamPerformanceSummary{
+			ClubID:          clubID,
+			TeamName:        name,
+			IsHomeTeam:      isHome,
+			TopPlayer:       "No data",
+			EventTypeCounts: map[string]int{},
+			ZoneFrequency:   map[string]int{},
+		}
+		teams[clubID] = t
+		return t
+	}
+	ensureTeam(match.HomeClubID, match.HomeClub.Name, true)
+	ensureTeam(match.AwayClubID, match.AwayClub.Name, false)
+
+	for _, p := range players {
+		isHome := p.ClubID == match.HomeClubID
+		name := strings.TrimSpace(p.Club.Name)
+		if name == "" {
+			if isHome {
+				name = match.HomeClub.Name
+			} else {
+				name = match.AwayClub.Name
+			}
+		}
+		ensureTeam(p.ClubID, name, isHome).Players++
+	}
+
+	playerBreakdown := map[uint]*playerPerformanceBreakdown{}
+	for _, report := range reports {
+		clubID, ok := playerClub[report.PlayerID]
+		if !ok {
+			continue // player no longer on either roster, skip
+		}
+		team := ensureTeam(clubID, "Unknown team", clubID == match.HomeClubID)
+		team.Reports++
+		team.Events += report.EventCount
+		team.Score += report.Score
+		if report.Score > team.TopPlayerScore {
+			team.TopPlayer = report.PlayerName
+			team.TopPlayerScore = report.Score
+		}
+		playerBreakdown[report.PlayerID] = &playerPerformanceBreakdown{
+			PlayerID:        report.PlayerID,
+			PlayerName:      report.PlayerName,
+			Score:           report.Score,
+			EventCount:      report.EventCount,
+			EventTypeCounts: map[string]int{},
+		}
+	}
+
+	for _, e := range events {
+		clubID, ok := eventClub[e.ID]
+		if !ok {
+			continue // event has no assigned player/club yet
+		}
+		team := teams[clubID]
+		if team == nil {
+			continue
+		}
+		team.EventTypeCounts[e.Type]++
+		if e.PitchZone != nil && strings.TrimSpace(*e.PitchZone) != "" {
+			team.ZoneFrequency[strings.TrimSpace(*e.PitchZone)]++
+		}
+		if bd, ok := playerBreakdown[eventPlayer[e.ID]]; ok {
+			bd.EventTypeCounts[e.Type]++
+		}
+	}
+
+	for _, bd := range playerBreakdown {
+		clubID, ok := playerClub[bd.PlayerID]
+		if !ok {
+			continue
+		}
+		if team := teams[clubID]; team != nil {
+			team.PlayerBreakdown = append(team.PlayerBreakdown, *bd)
+		}
+	}
+
+	physicalStatsByClub(stats, playerClub, eventPlayer, teams)
+
+	summaries := make([]teamPerformanceSummary, 0, len(teams))
+	for _, t := range teams {
+		summaries = append(summaries, *t)
+	}
+	sortTeamPerformanceSummaries(summaries)
+
+	totalEvents, totalScore := 0, 0
+	for _, r := range reports {
+		totalEvents += r.EventCount
+		totalScore += r.Score
+	}
+
+	return &teamPerformanceReportPayload{
+		Match:        match,
+		Teams:        summaries,
+		Reports:      reports,
+		TotalReports: len(reports),
+		TotalEvents:  totalEvents,
+		TotalScore:   totalScore,
+	}, nil
+}
+
+// physicalStatsByClub averages AnalysisEventStats per club, over only the
+// non-nil values contributing to each specific field, and attaches the
+// result to the matching team in teams. A team with zero stats rows is left
+// with PhysicalStats == nil.
+func physicalStatsByClub(stats []models.AnalysisEventStats, playerClub map[uint]uint, eventPlayer map[uint]uint, teams map[uint]*teamPerformanceSummary) {
+	type accumulator struct {
+		sampleSize                         int
+		distanceSum, speedSum, maxSpeedSum float64
+		distanceN, speedN, maxSpeedN       int
+		sprintsSum, touchesSum             float64
+		sprintsN, touchesN                 int
+	}
+	byClub := map[uint]*accumulator{}
+
+	for _, s := range stats {
+		pid := uintOrZero(s.PlayerID)
+		if pid == 0 {
+			pid = eventPlayer[s.AnalysisEventID]
+		}
+		clubID, ok := playerClub[pid]
+		if !ok {
+			continue
+		}
+		acc := byClub[clubID]
+		if acc == nil {
+			acc = &accumulator{}
+			byClub[clubID] = acc
+		}
+		acc.sampleSize++
+		if s.DistanceCoveredM != nil {
+			acc.distanceSum += *s.DistanceCoveredM
+			acc.distanceN++
+		}
+		if s.AverageSpeedKmh != nil {
+			acc.speedSum += *s.AverageSpeedKmh
+			acc.speedN++
+		}
+		if s.MaxSpeedKmh != nil {
+			acc.maxSpeedSum += *s.MaxSpeedKmh
+			acc.maxSpeedN++
+		}
+		if s.SprintsCount != nil {
+			acc.sprintsSum += float64(*s.SprintsCount)
+			acc.sprintsN++
+		}
+		if s.TouchesCount != nil {
+			acc.touchesSum += float64(*s.TouchesCount)
+			acc.touchesN++
+		}
+	}
+
+	avgPtr := func(sum float64, n int) *float64 {
+		if n == 0 {
+			return nil
+		}
+		v := sum / float64(n)
+		return &v
+	}
+
+	for clubID, acc := range byClub {
+		team := teams[clubID]
+		if team == nil {
+			continue
+		}
+		team.PhysicalStats = &physicalStatsAverage{
+			SampleSize:          acc.sampleSize,
+			AvgDistanceCoveredM: avgPtr(acc.distanceSum, acc.distanceN),
+			AvgSpeedKmh:         avgPtr(acc.speedSum, acc.speedN),
+			AvgMaxSpeedKmh:      avgPtr(acc.maxSpeedSum, acc.maxSpeedN),
+			AvgSprints:          avgPtr(acc.sprintsSum, acc.sprintsN),
+			AvgTouches:          avgPtr(acc.touchesSum, acc.touchesN),
+		}
+	}
+}
+
+func uintOrZero(p *uint) uint {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 func buildPlayerReportPDF(report models.PlayerAnalysisReport) []byte {
@@ -295,74 +575,8 @@ func buildPlayerReportPDF(report models.PlayerAnalysisReport) []byte {
 	return writeSimplePDF(pages)
 }
 
-type teamPerformanceSummary struct {
-	TeamName       string
-	Players        int
-	Reports        int
-	Events         int
-	Score          int
-	TopPlayer      string
-	TopPlayerScore int
-}
-
-func buildTeamPerformancePDF(match models.Match, reports []models.PlayerAnalysisReport, players []models.Player) []byte {
-	playerTeams := make(map[uint]string)
-	teams := make(map[string]*teamPerformanceSummary)
-
-	ensureTeam := func(name string) *teamPerformanceSummary {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			name = "Unknown team"
-		}
-		if _, ok := teams[name]; !ok {
-			teams[name] = &teamPerformanceSummary{
-				TeamName:  name,
-				TopPlayer: "No data",
-			}
-		}
-		return teams[name]
-	}
-
-	for _, player := range players {
-		teamName := strings.TrimSpace(player.Club.Name)
-		if teamName == "" {
-			switch player.ClubID {
-			case match.HomeClubID:
-				teamName = match.HomeClub.Name
-			case match.AwayClubID:
-				teamName = match.AwayClub.Name
-			default:
-				teamName = "Unknown team"
-			}
-		}
-		playerTeams[player.ID] = teamName
-		ensureTeam(teamName).Players++
-	}
-
-	for _, report := range reports {
-		teamName := playerTeams[report.PlayerID]
-		team := ensureTeam(teamName)
-		team.Reports++
-		team.Events += report.EventCount
-		team.Score += report.Score
-		if report.Score > team.TopPlayerScore {
-			team.TopPlayer = report.PlayerName
-			team.TopPlayerScore = report.Score
-		}
-	}
-
-	summaries := make([]teamPerformanceSummary, 0, len(teams))
-	for _, team := range teams {
-		summaries = append(summaries, *team)
-	}
-	sortTeamPerformanceSummaries(summaries)
-
-	totalEvents := 0
-	totalScore := 0
-	for _, report := range reports {
-		totalEvents += report.EventCount
-		totalScore += report.Score
-	}
+func buildTeamPerformancePDF(payload *teamPerformanceReportPayload) []byte {
+	match := payload.Match
 
 	scoreLine := "Score: not recorded"
 	if match.ScoreHome != nil && match.ScoreAway != nil {
@@ -378,14 +592,14 @@ func buildTeamPerformancePDF(match models.Match, reports []models.PlayerAnalysis
 		fmt.Sprintf("Match date: %s", match.Date.Format("2006-01-02 15:04")),
 		fmt.Sprintf("Generated: %s", time.Now().Format(time.RFC3339)),
 		"",
-		fmt.Sprintf("Saved player reports: %d", len(reports)),
-		fmt.Sprintf("Tagged player events: %d", totalEvents),
-		fmt.Sprintf("Total performance score: %d", totalScore),
+		fmt.Sprintf("Saved player reports: %d", payload.TotalReports),
+		fmt.Sprintf("Tagged player events: %d", payload.TotalEvents),
+		fmt.Sprintf("Total performance score: %d", payload.TotalScore),
 		"",
 		"Team summary:",
 	}
 
-	for _, team := range summaries {
+	for _, team := range payload.Teams {
 		lines = append(lines,
 			fmt.Sprintf("- %s", team.TeamName),
 			fmt.Sprintf("  Players: %d", team.Players),
@@ -393,12 +607,19 @@ func buildTeamPerformancePDF(match models.Match, reports []models.PlayerAnalysis
 			fmt.Sprintf("  Events: %d", team.Events),
 			fmt.Sprintf("  Score: %d", team.Score),
 			fmt.Sprintf("  Top player: %s (%d)", team.TopPlayer, team.TopPlayerScore),
-			"",
 		)
+		if team.PhysicalStats != nil {
+			lines = append(lines, fmt.Sprintf("  Physical stats (n=%d, avg speed %.1f km/h, avg distance %.0f m)",
+				team.PhysicalStats.SampleSize,
+				floatOrZero(team.PhysicalStats.AvgSpeedKmh),
+				floatOrZero(team.PhysicalStats.AvgDistanceCoveredM),
+			))
+		}
+		lines = append(lines, "")
 	}
 
 	lines = append(lines, "Top player reports:")
-	for i, report := range reports {
+	for i, report := range payload.Reports {
 		if i >= 10 {
 			break
 		}
@@ -414,6 +635,13 @@ func buildTeamPerformancePDF(match models.Match, reports []models.PlayerAnalysis
 
 	pages := paginatePDFLines(lines, 44)
 	return writeSimplePDF(pages)
+}
+
+func floatOrZero(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 func sortTeamPerformanceSummaries(summaries []teamPerformanceSummary) {

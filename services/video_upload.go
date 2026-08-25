@@ -2,24 +2,26 @@
 package services
 
 import (
+	"afrigoals.com/database"
+	"afrigoals.com/middleware"
+	"afrigoals.com/models"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/gofiber/fiber/v2"
+	"gorm.io/gorm"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
-	"afrigoals.com/database"
-	"afrigoals.com/middleware"
-	"afrigoals.com/models"
-	"github.com/gofiber/fiber/v2"
-	"gorm.io/gorm"
 )
 
 var clipCutSemaphore = make(chan struct{}, 1)
@@ -615,32 +617,35 @@ func DeleteMatchVideo(c *fiber.Ctx) error {
 	})
 }
 
+// DeleteMatchClip removes an analyst-generated clip. Clips have no DB row -
+// the R2 object at matches/<match_id>/clips/event_<event_id>.mp4 is the only
+// record of them, keyed by event_id (the route's :clip_id param carries the
+// event id, since the frontend always passes back the id it was given by
+// ListMatchClips/CutClipByWindow, which is the event id).
 func DeleteMatchClip(c *fiber.Ctx) error {
-	matchID := c.Params("match_id")
-	clipID := c.Params("clip_id")
+	matchIDUint := mustParseUint(c.Params("match_id"))
+	eventIDUint := mustParseUint(c.Params("event_id"))
+	if matchIDUint == 0 || eventIDUint == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid match_id or clip_id",
+		})
+	}
 
-	// ✅ ADDED: load clip so we can delete physical file too
-	var clip models.Clip
-	if err := database.DB.Where("match_id = ? AND id = ?", matchID, clipID).First(&clip).Error; err == nil {
-		if clip.ClipURL != nil && *clip.ClipURL != "" {
-			if localPath, ok := uploadsURLToLocalPath(*clip.ClipURL); ok {
-				_ = os.Remove(localPath)
-			}
+	ctx := context.Background()
+	if err := deleteClipFileFromR2(ctx, matchIDUint, eventIDUint); err != nil {
+		var notFound *types.NotFound
+		var noSuchKey *types.NoSuchKey
+		if !errors.As(err, &notFound) && !errors.As(err, &noSuchKey) {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error":   "Failed to delete clip",
+				"details": err.Error(),
+			})
 		}
 	}
 
-	result := database.DB.Where("match_id = ? AND id = ?", matchID, clipID).Delete(&models.Clip{})
-	if result.Error != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to delete clip",
-		})
-	}
-
-	if result.RowsAffected == 0 {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "Clip not found",
-		})
-	}
+	_ = database.DB.Model(&models.AnalysisEvent{}).
+		Where("match_id = ? AND id = ?", matchIDUint, eventIDUint).
+		Update("clip_url", nil).Error
 
 	return c.JSON(fiber.Map{
 		"success": true,
@@ -648,17 +653,18 @@ func DeleteMatchClip(c *fiber.Ctx) error {
 	})
 }
 
+// CutClipByWindow generates (or returns the existing) clip for one analysis
+// event. Clips have no DB row: the R2 object at
+// matches/<match_id>/clips/event_<event_id>.mp4 is the only record of them.
+// The request blocks until the cut finishes (or fails) - clip cutting is
+// already serialized to one-at-a-time via clipCutSemaphore, so there is no
+// concurrency to hide behind a background goroutine, and the frontend already
+// tracks "generating" purely in local state while this request is in flight.
 func CutClipByWindow(c *fiber.Ctx) error {
-	user, err := middleware.GetUserFromContext(c)
+	_, err := middleware.GetUserFromContext(c)
 	if err != nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 			"error": "Unauthorized",
-		})
-	}
-	if err := ensureClipStatusColumns(); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error":   "Failed to prepare clip storage",
-			"details": err.Error(),
 		})
 	}
 
@@ -703,40 +709,43 @@ func CutClipByWindow(c *fiber.Ctx) error {
 		})
 	}
 
-	var existingClip models.Clip
-	if err := database.DB.
-		Where("match_id = ? AND event_id = ?", matchIDUint, req.EventID).
-		First(&existingClip).Error; err == nil {
-		statusCode := fiber.StatusOK
-		status := "ready"
-		if shouldReprocessClip(existingClip) {
-			statusCode = fiber.StatusAccepted
-			status = "processing"
-			existingEndSec := existingClip.StartSec + 1
-			if existingClip.EndSec != nil {
-				existingEndSec = *existingClip.EndSec
-			}
-			existingDurationSec := existingEndSec - existingClip.StartSec
-			if existingDurationSec <= 0 {
-				existingDurationSec = 1
-			}
-			existingClip.Status = "processing"
-			existingClip.ErrorMessage = nil
-			_ = database.DB.Save(&existingClip).Error
-			go completeClipCut(matchIDUint, req.EventID, existingClip.ID, existingClip.StartSec, existingDurationSec)
-		}
-		return c.Status(statusCode).JSON(fiber.Map{
+	ctx := context.Background()
+
+	if exists, clipURL, err := headClipObject(ctx, matchIDUint, req.EventID); err == nil && exists {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{
 			"success": true,
 			"data": fiber.Map{
-				"clip":     existingClip,
+				"clip":     buildMatchClipResponse(matchIDUint, req.EventID, clipURL, event),
 				"existing": true,
-				"status":   status,
+				"status":   "completed",
 			},
 		})
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error":   "Failed to check existing clip",
-			"details": err.Error(),
+	}
+
+	if event.VideoID == nil {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+			"error": "Event has no linked video",
+		})
+	}
+
+	var video models.Video
+	if err := database.DB.
+		Where("match_id = ? AND id = ?", matchIDUint, *event.VideoID).
+		First(&video).Error; err != nil {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+			"error": "Match video not found",
+		})
+	}
+
+	videoURL := ""
+	if video.VideoURL != nil && *video.VideoURL != "" {
+		videoURL = *video.VideoURL
+	} else {
+		videoURL = video.URL
+	}
+	if strings.TrimSpace(videoURL) == "" {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+			"error": "Video URL missing",
 		})
 	}
 
@@ -750,264 +759,141 @@ func CutClipByWindow(c *fiber.Ctx) error {
 		durationSec = 1
 	}
 
-	clipTitle := fmt.Sprintf("%s", event.Type)
-	if event.PlayerName != nil && *event.PlayerName != "Team Event" {
-		clipTitle = fmt.Sprintf("%s - %s", event.Type, *event.PlayerName)
-	}
-
-	clip := models.Clip{
-		MatchID:   matchIDUint,
-		VideoID:   event.VideoID,
-		EventID:   &req.EventID,
-		Title:     clipTitle,
-		StartSec:  startSec,
-		EndSec:    &endSec,
-		Status:    "processing",
-		CreatedBy: user.ID,
-	}
-
-	if err := database.DB.Create(&clip).Error; err != nil {
+	_, clipURL, err := cutClipToR2(ctx, matchIDUint, req.EventID, videoURL, startSec, durationSec)
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error":   "Failed to create clip",
+			"error":   "Failed to generate clip",
 			"details": err.Error(),
 		})
 	}
 
-	go completeClipCut(matchIDUint, req.EventID, clip.ID, startSec, durationSec)
+	event.ClipURL = &clipURL
+	_ = database.DB.Save(&event).Error
 
-	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
 		"success": true,
 		"data": fiber.Map{
-			"clip":   clip,
-			"status": "processing",
+			"clip":     buildMatchClipResponse(matchIDUint, req.EventID, clipURL, event),
+			"existing": false,
+			"status":   "completed",
 		},
 	})
 }
 
-func shouldReprocessClip(clip models.Clip) bool {
-	if strings.ToLower(strings.TrimSpace(clip.Status)) != "completed" {
-		return true
+// buildMatchClipResponse shapes a clip as the frontend's MatchClip type
+// expects, with id set equal to event_id since that's the clip's real
+// identity now that there's no auto-increment DB row.
+func buildMatchClipResponse(matchID uint, eventID uint, clipURL string, event models.AnalysisEvent) fiber.Map {
+	return fiber.Map{
+		"id":         eventID,
+		"match_id":   matchID,
+		"event_id":   eventID,
+		"clip_url":   clipURL,
+		"object_key": matchEventClipObjectKey(matchID, eventID),
+		"status":     "completed",
+		"event": fiber.Map{
+			"id":          event.ID,
+			"type":        event.Type,
+			"player_name": event.PlayerName,
+		},
 	}
-	if clip.ClipURL == nil {
-		return true
-	}
-	clipURL := strings.TrimSpace(*clip.ClipURL)
-	if clipURL == "" {
-		return true
-	}
-	return strings.HasPrefix(clipURL, "/uploads/clips/")
 }
 
-func completeClipCut(
-	matchID uint,
-	eventID uint,
-	clipID uint,
-	startSec int,
-	durationSec int,
-) {
+// cutClipToR2 downloads the source video (reusing an in-flight download for
+// the same URL, see acquireSourceVideo), cuts the requested window with
+// ffmpeg, and uploads the result to R2. Actual cutting is serialized to one
+// at a time via clipCutSemaphore.
+func cutClipToR2(ctx context.Context, matchID uint, eventID uint, videoURL string, startSec int, durationSec int) (string, string, error) {
+	clipsDir := filepath.Join(os.TempDir(), "afrigoals-clips")
+	if err := os.MkdirAll(clipsDir, 0755); err != nil {
+		return "", "", err
+	}
+
+	inputPath, release, err := acquireSourceVideo(videoURL, clipsDir)
+	if err != nil {
+		return "", "", fmt.Errorf("video download failed: %w", err)
+	}
+	defer release()
 
 	clipCutSemaphore <- struct{}{}
-	defer func() {
-		<-clipCutSemaphore
-	}()
+	defer func() { <-clipCutSemaphore }()
 
-	var clip models.Clip
+	outputPath := filepath.Join(clipsDir, fmt.Sprintf("clip_event_%d.mp4", eventID))
+	defer os.Remove(outputPath)
 
-	if err := database.DB.
-		Where("match_id = ? AND id = ?", matchID, clipID).
-		First(&clip).Error; err != nil {
-		return
+	if err := ffmpegCutClipToH264Faststart(inputPath, outputPath, startSec, durationSec); err != nil {
+		return "", "", err
 	}
 
-	failClip := func(message string) {
-
-		clip.Status = "failed"
-		clip.ClipURL = nil
-		clip.ErrorMessage = &message
-
-		_ = database.DB.Save(&clip).Error
-	}
-
-	var event models.AnalysisEvent
-
-	if err := database.DB.
-		Where(
-			"match_id = ? AND id = ?",
-			matchID,
-			eventID,
-		).
-		First(&event).Error; err != nil {
-
-		failClip("Event not found")
-		return
-	}
-
-	if event.VideoID == nil {
-
-		failClip("Event has no linked video")
-		return
-	}
-
-	var video models.Video
-
-	if err := database.DB.
-		Where(
-			"match_id = ? AND id = ?",
-			matchID,
-			*event.VideoID,
-		).
-		First(&video).Error; err != nil {
-
-		failClip("Match video not found")
-		return
-	}
-
-	var videoURL string
-
-	if video.VideoURL != nil &&
-		*video.VideoURL != "" {
-
-		videoURL = *video.VideoURL
-
-	} else {
-
-		videoURL = video.URL
-
-	}
-
-	if strings.TrimSpace(videoURL) == "" {
-
-		failClip("Video URL missing")
-		return
-	}
-
-	clipsDir := filepath.Join(
-		os.TempDir(),
-		"afrigoals-clips",
-	)
-
-	if err := os.MkdirAll(
-		clipsDir,
-		0755,
-	); err != nil {
-
-		failClip(err.Error())
-		return
-	}
-
-	/*
-		IMPORTANT FIX:
-
-		If video is on R2,
-		download locally first.
-
-		Do not let FFmpeg read remote URL.
-	*/
-
-	inputPath := videoURL
-
-	removeInput := false
-
-	if strings.HasPrefix(
-		videoURL,
-		"http://",
-	) ||
-		strings.HasPrefix(
-			videoURL,
-			"https://",
-		) {
-
-		inputPath = filepath.Join(
-			clipsDir,
-			fmt.Sprintf(
-				"source_%d.mp4",
-				clip.ID,
-			),
-		)
-
-		err := downloadVideo(
-			videoURL,
-			inputPath,
-		)
-
-		if err != nil {
-
-			failClip(
-				fmt.Sprintf(
-					"video download failed: %v",
-					err,
-				),
-			)
-
-			return
-		}
-
-		removeInput = true
-
-	}
-
-	outputPath := filepath.Join(
-		clipsDir,
-		fmt.Sprintf(
-			"clip_%d.mp4",
-			clip.ID,
-		),
-	)
-
-	defer func() {
-
-		if removeInput {
-			os.Remove(inputPath)
-		}
-
-		os.Remove(outputPath)
-
-	}()
-
-	err := ffmpegCutClipToH264Faststart(
-		inputPath,
-		outputPath,
-		startSec,
-		durationSec,
-	)
-
+	objectKey, clipURL, err := uploadClipFileToR2(ctx, matchID, eventID, outputPath)
 	if err != nil {
-
-		failClip(err.Error())
-		return
+		return "", "", fmt.Errorf("R2 upload failed: %w", err)
 	}
 
-	objectKey, clipURL, err :=
-		uploadClipFileToR2(
-			context.Background(),
-			matchID,
-			clip.ID,
-			outputPath,
-		)
+	return objectKey, clipURL, nil
+}
 
-	if err != nil {
+type cachedSourceVideo struct {
+	mu       sync.Mutex
+	path     string
+	ready    bool
+	err      error
+	refCount int
+}
 
-		failClip(
-			fmt.Sprintf(
-				"R2 upload failed: %v",
-				err,
-			),
-		)
+var (
+	sourceVideoCacheMu sync.Mutex
+	sourceVideoCache   = map[string]*cachedSourceVideo{}
+)
 
-		return
+// acquireSourceVideo returns a local path to videoURL's content, downloading
+// it once and letting every other clip cut for the same URL (e.g. a batch of
+// clips from the same match) reuse that download instead of re-fetching the
+// entire source video per clip. The caller must invoke the returned release
+// func once it's done reading the file.
+func acquireSourceVideo(videoURL string, clipsDir string) (string, func(), error) {
+	if !strings.HasPrefix(videoURL, "http://") && !strings.HasPrefix(videoURL, "https://") {
+		return videoURL, func() {}, nil
 	}
 
-	clip.ObjectKey = &objectKey
-	clip.ClipURL = &clipURL
-	clip.Status = "completed"
-	clip.ErrorMessage = nil
+	sum := sha256.Sum256([]byte(videoURL))
+	key := hex.EncodeToString(sum[:])
 
-	database.DB.Save(&clip)
+	sourceVideoCacheMu.Lock()
+	entry, ok := sourceVideoCache[key]
+	if !ok {
+		entry = &cachedSourceVideo{
+			path: filepath.Join(clipsDir, fmt.Sprintf("source_%s.mp4", key)),
+		}
+		sourceVideoCache[key] = entry
+	}
+	entry.refCount++
+	sourceVideoCacheMu.Unlock()
 
-	event.ClipURL = &clipURL
+	release := func() {
+		sourceVideoCacheMu.Lock()
+		defer sourceVideoCacheMu.Unlock()
+		entry.refCount--
+		if entry.refCount <= 0 {
+			delete(sourceVideoCache, key)
+			os.Remove(entry.path)
+		}
+	}
 
-	database.DB.Save(&event)
+	entry.mu.Lock()
+	if !entry.ready {
+		entry.err = downloadVideo(videoURL, entry.path)
+		entry.ready = true
+	}
+	path, downloadErr := entry.path, entry.err
+	entry.mu.Unlock()
 
+	if downloadErr != nil {
+		release()
+		return "", func() {}, downloadErr
+	}
+
+	return path, release, nil
 }
 
 /*
@@ -1015,7 +901,6 @@ func completeClipCut(
 HELPERS (existing + chunked helpers)
 ===========================================================
 */
-
 
 func mustParseUint(s string) uint {
 	v, _ := strconv.ParseUint(s, 10, 32)

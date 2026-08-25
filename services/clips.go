@@ -2,6 +2,7 @@ package services
 
 import (
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -99,15 +100,15 @@ func CreateClip(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		MatchID  uint    `json:"match_id"`
-		VideoID  *uint   `json:"video_id"`
-		EventID  *uint   `json:"event_id"`
-		Title    string  `json:"title"`
-		StartSec int     `json:"start_sec"`
-		EndSec   *int    `json:"end_sec"`
-		ClipURL  *string `json:"clip_url"`
+		MatchID   uint    `json:"match_id"`
+		VideoID   *uint   `json:"video_id"`
+		EventID   *uint   `json:"event_id"`
+		Title     string  `json:"title"`
+		StartSec  int     `json:"start_sec"`
+		EndSec    *int    `json:"end_sec"`
+		ClipURL   *string `json:"clip_url"`
 		ObjectKey *string `json:"object_key"`
-		Tags     *string `json:"tags"`
+		Tags      *string `json:"tags"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -178,14 +179,14 @@ func UpdateClip(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Title    *string `json:"title"`
-		StartSec *int    `json:"start_sec"`
-		EndSec   *int    `json:"end_sec"`
-		VideoID  *uint   `json:"video_id"`
-		EventID  *uint   `json:"event_id"`
-		ClipURL  *string `json:"clip_url"`
+		Title     *string `json:"title"`
+		StartSec  *int    `json:"start_sec"`
+		EndSec    *int    `json:"end_sec"`
+		VideoID   *uint   `json:"video_id"`
+		EventID   *uint   `json:"event_id"`
+		ClipURL   *string `json:"clip_url"`
 		ObjectKey *string `json:"object_key"`
-		Tags     *string `json:"tags"`
+		Tags      *string `json:"tags"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
@@ -241,10 +242,114 @@ func DeleteClip(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "message": "Clip deleted"})
 }
 
+// ListMatchClips lists the analyst-generated clips for a match. Unlike the
+// generic ListClips above, these clips have no DB row - the R2 bucket under
+// matches/<match_id>/clips/ is the source of truth, so this walks that prefix
+// directly and joins against AnalysisEvent for display fields (type, player
+// name). The response envelope and pagination params match ListClips so the
+// frontend's existing listMatchClips() client needs no changes.
 func ListMatchClips(c *fiber.Ctx) error {
-	matchID := c.Params("match_id")
-	c.Context().QueryArgs().Add("match_id", matchID)
-	return ListClips(c)
+	matchIDUint := mustParseUint(c.Params("match_id"))
+	if matchIDUint == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"success": false,
+			"error":   "Invalid match_id",
+		})
+	}
+
+	page, _ := strconv.Atoi(c.Query("page", "1"))
+	perPage, _ := strconv.Atoi(c.Query("per_page", "50"))
+	if page < 1 {
+		page = 1
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 50
+	}
+
+	objects, err := listMatchClipObjects(c.Context(), matchIDUint)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"success": false,
+			"error":   "Failed to list clips",
+			"details": err.Error(),
+		})
+	}
+
+	sort.Slice(objects, func(i, j int) bool {
+		return objects[i].LastModified.After(objects[j].LastModified)
+	})
+
+	eventIDs := make([]uint, 0, len(objects))
+	for _, obj := range objects {
+		eventIDs = append(eventIDs, obj.EventID)
+	}
+
+	eventsByID := map[uint]models.AnalysisEvent{}
+	if len(eventIDs) > 0 {
+		var events []models.AnalysisEvent
+		if err := database.DB.
+			Where("match_id = ? AND id IN ?", matchIDUint, eventIDs).
+			Find(&events).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"success": false,
+				"error":   "Failed to load events for clips",
+			})
+		}
+		for _, ev := range events {
+			eventsByID[ev.ID] = ev
+		}
+	}
+
+	clips := make([]fiber.Map, 0, len(objects))
+	for _, obj := range objects {
+		event, ok := eventsByID[obj.EventID]
+		if !ok {
+			event = models.AnalysisEvent{ID: obj.EventID, Type: "Clip"}
+		}
+		clips = append(clips, fiber.Map{
+			"id":         obj.EventID,
+			"match_id":   matchIDUint,
+			"event_id":   obj.EventID,
+			"clip_url":   obj.ClipURL,
+			"object_key": obj.ObjectKey,
+			"status":     "completed",
+			"created_at": obj.LastModified,
+			"event": fiber.Map{
+				"id":          event.ID,
+				"type":        event.Type,
+				"player_name": event.PlayerName,
+			},
+		})
+	}
+
+	total := len(clips)
+	totalPages := total / perPage
+	if total%perPage > 0 {
+		totalPages++
+	}
+	if totalPages == 0 {
+		totalPages = 1
+	}
+
+	offset := (page - 1) * perPage
+	if offset > total {
+		offset = total
+	}
+	end := offset + perPage
+	if end > total {
+		end = total
+	}
+
+	return c.JSON(fiber.Map{
+		"success": true,
+		"data": fiber.Map{
+			"clips":       clips[offset:end],
+			"total":       total,
+			"page":        page,
+			"per_page":    perPage,
+			"total_pages": totalPages,
+		},
+	})
 }
 
 func normalizeClipResponse(clip *models.Clip) {

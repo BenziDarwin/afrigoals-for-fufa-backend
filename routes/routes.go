@@ -130,6 +130,7 @@ func SetupRoutes(app *fiber.App) {
 			adminLeagues.Delete("/:id", services.DeleteLeague)
 			adminLeagues.Post("/add-club", services.AddClubToLeague)
 			adminLeagues.Post("/remove-club", services.RemoveClubFromLeague)
+			adminLeagues.Get("/:league_id/report-queue", services.ListLeagueReportQueue)
 		}
 	}
 
@@ -359,6 +360,50 @@ func SetupRoutes(app *fiber.App) {
 		analystMatches.Get("/player-reports/:report_id/pdf", services.DownloadPlayerAnalysisReportPDF)
 		analystMatches.Get("/team-performance/pdf", services.DownloadTeamPerformanceReportPDF)
 
+		// NEW: not wrapped in getCache - a manager must see a fresh status
+		// right after approving/distributing, and getCache has no
+		// invalidation hook to bust on write.
+		analystMatches.Get("/report-review", services.GetMatchReportReview)
+
+		// NEW: AI assistant Q&A over the match's tagged data. Read-only
+		// (calls Claude, doesn't mutate anything), but still requires an
+		// analyst-or-above login so it isn't a public LLM proxy.
+		//
+		// The gate is passed directly as a per-route handler (not a sibling
+		// .Group("").Use()) - Fiber attaches .Use() middleware to the path
+		// prefix itself, not to "only this Group() call's routes", so a
+		// second group sharing analystMatches' prefix would stack its
+		// middleware onto every other route under that prefix, including
+		// analystMatchesWrite's below.
+		analystMatches.Post(
+			"/ai-assistant/ask",
+			middleware.DataAnalystOrAbove(),
+			services.AskMatchAssistant,
+		)
+
+		// NEW: analyst submits their finished report to the league manager -
+		// same tier as the rest of the analyst write endpoints.
+		analystMatches.Post(
+			"/report-review/submit",
+			middleware.DataAnalystOrAbove(),
+			services.SubmitMatchReport,
+		)
+
+		// NEW: review/approve/distribute - stricter than the
+		// DataAnalystOrAbove() write group below: only league managers and
+		// admins, never the analyst who authored the report. Same
+		// per-route-handler reasoning as above.
+		analystMatches.Post(
+			"/report-review/review",
+			middleware.LeagueAdminOrAbove(),
+			services.ReviewMatchReport,
+		)
+		analystMatches.Post(
+			"/report-review/distribute",
+			middleware.LeagueAdminOrAbove(),
+			services.DistributeMatchReport,
+		)
+
 		analystMatchesWrite := analystMatches.Group("")
 		analystMatchesWrite.Use(middleware.DataAnalystOrAbove())
 		{
@@ -390,7 +435,7 @@ func SetupRoutes(app *fiber.App) {
 
 			// Clip operations
 			analystMatchesWrite.Post("/clips/cut-by-window", services.CutClipByWindow)
-			analystMatchesWrite.Delete("/clips/:clip_id", services.DeleteMatchClip)
+			analystMatchesWrite.Delete("/clips/:event_id", services.DeleteMatchClip)
 
 			// Analysis events
 			analystMatchesWrite.Post("/analysis-events", services.CreateAnalysisEvent)
