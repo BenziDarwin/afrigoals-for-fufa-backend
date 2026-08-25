@@ -21,7 +21,10 @@ func ConnectDB() *gorm.DB {
 	}
 
 	var err error
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	DB, err = gorm.Open(postgres.New(postgres.Config{
+		DSN:                  dsn,
+		PreferSimpleProtocol: true,
+	}), &gorm.Config{})
 	if err != nil {
 		log.Fatal("Failed to connect to PostgreSQL:", err)
 	}
@@ -55,6 +58,7 @@ func ConnectDB() *gorm.DB {
 		&models.Substitute{},        // FK to Formation & Player
 		&models.UnavailablePlayer{}, // FK to Formation & Player
 		&models.MatchEvent{},        // FK to Match (and optionally Player & Club)
+		&models.Clip{},
 
 		// The match_analysts join table is created by Match.Analysts (many2many),
 		// which only produces (match_id, user_id). MatchAnalyst adds the
