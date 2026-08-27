@@ -365,21 +365,25 @@ func SetupRoutes(app *fiber.App) {
 		// invalidation hook to bust on write.
 		analystMatches.Get("/report-review", services.GetMatchReportReview)
 
-		// NEW: AI assistant Q&A over the match's tagged data. Read-only
-		// (calls Claude, doesn't mutate anything), but still requires an
-		// analyst-or-above login so it isn't a public LLM proxy.
-		//
-		// The gate is passed directly as a per-route handler (not a sibling
-		// .Group("").Use()) - Fiber attaches .Use() middleware to the path
-		// prefix itself, not to "only this Group() call's routes", so a
-		// second group sharing analystMatches' prefix would stack its
-		// middleware onto every other route under that prefix, including
-		// analystMatchesWrite's below.
-		analystMatches.Post(
-			"/ai-assistant/ask",
-			middleware.DataAnalystOrAbove(),
-			services.AskMatchAssistant,
-		)
+		// NEW: Club Performance Intelligence - Phase 1 post-match report.
+		// Not wrapped in getCache for the same reason as report-review: an
+		// analyst tagging/correcting an event must see the report update
+		// immediately. No static role gate here either - a club manager
+		// must be let through for their own club's matches but not others,
+		// which a single middleware can't express, so
+		// canViewMatchPerformance() is checked explicitly inside the handler.
+		analystMatches.Get("/performance-report", services.GetMatchPerformanceReport)
+		analystMatches.Get("/performance-report/players/:player_id", services.GetPlayerPerformanceReport)
+
+		// NEW: AI Coach Insights Q&A over the match's performance report,
+		// saved to match_ai_insights so answers persist on the report page
+		// for anyone who views it later. No static role gate here (same
+		// reasoning as performance-report above): access must match who can
+		// see the report itself (analyst/league-admin/admin, or the club
+		// manager of either side), which loadMatchForAssistantAccess checks
+		// inside the handler via canViewMatchPerformance().
+		analystMatches.Post("/ai-assistant/ask", services.AskMatchAssistant)
+		analystMatches.Get("/ai-assistant/insights", services.ListMatchAIInsights)
 
 		// NEW: analyst submits their finished report to the league manager -
 		// same tier as the rest of the analyst write endpoints.
