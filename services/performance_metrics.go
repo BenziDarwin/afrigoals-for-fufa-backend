@@ -163,9 +163,22 @@ func countMetric(key, label, category string, matching []models.AnalysisEvent) p
 	}
 }
 
+const percentageConfidenceSample = 2.0
+
+func confidenceScaledPercent(numeratorCount, denominatorCount int) float64 {
+	if denominatorCount == 0 {
+		return 0
+	}
+	raw := 100 * float64(numeratorCount) / float64(denominatorCount)
+	confidence := float64(denominatorCount) / (float64(denominatorCount) + percentageConfidenceSample)
+	return raw * confidence
+}
+
 // ratioMetric expresses len(numerator)/len(denominator) as a percentage.
-// numerator is expected to be a subset of denominator. Value is nil (never
-// zero) when the denominator is empty.
+// numerator is expected to be a subset of denominator. The displayed value is
+// confidence-scaled by sample size, so a tiny perfect sample does not outrank
+// a larger, more representative team performance. Value is nil (never zero)
+// when the denominator is empty.
 func ratioMetric(key, label, category string, numerator, denominator []models.AnalysisEvent, notes string) performanceMetric {
 	if len(denominator) == 0 {
 		return performanceMetric{
@@ -174,11 +187,18 @@ func ratioMetric(key, label, category string, numerator, denominator []models.An
 			SampleSize: 0, Notes: notes,
 		}
 	}
-	v := 100 * float64(len(numerator)) / float64(len(denominator))
+	v := confidenceScaledPercent(len(numerator), len(denominator))
+	scaledNotes := strings.TrimSpace(notes)
+	scaleNote := fmt.Sprintf("Performance-weighted by sample size; raw rate was %.0f%% from %d/%d events.", 100*float64(len(numerator))/float64(len(denominator)), len(numerator), len(denominator))
+	if scaledNotes == "" {
+		scaledNotes = scaleNote
+	} else {
+		scaledNotes += " " + scaleNote
+	}
 	return performanceMetric{
 		Key: key, Label: label, Category: category,
 		Status: StatusMeasured, Value: &v, Unit: "percent",
-		SampleSize: len(denominator), Notes: notes,
+		SampleSize: len(denominator), Notes: scaledNotes,
 		EventIDs: eventIDs(denominator),
 	}
 }
@@ -208,7 +228,7 @@ func estimatedOutcomeRateMetric(key, label, category string, attempts []models.A
 			SampleSize: 0, Notes: notes, EventIDs: eventIDs(attempts),
 		}
 	}
-	v := 100 * float64(successCount) / float64(classifiedCount)
+	v := confidenceScaledPercent(successCount, classifiedCount)
 	return performanceMetric{
 		Key: key, Label: label, Category: category,
 		Status: StatusEstimated, Value: &v, Unit: "percent",
@@ -246,7 +266,8 @@ func computeAttackingMetrics(events []models.AnalysisEvent) metricSection {
 	shots := filterByType(events, "shot", "shot_on_target", "goal")
 	shotsOnTarget := filterByType(events, "shot_on_target", "goal")
 	goals := filterByType(events, "goal")
-	bigChances := filterByType(events, "big_chance")
+	disallowedGoals := filterByType(events, "goal_disallowed")
+	bigChances := filterByType(events, "big_chance", "goal", "shot_on_target", "goal_disallowed")
 	crosses := filterByType(events, "cross")
 	dribbles := filterByType(events, "dribble")
 	passCompleted := filterByType(events, "pass_completed")
@@ -255,6 +276,7 @@ func computeAttackingMetrics(events []models.AnalysisEvent) metricSection {
 
 	metrics := []performanceMetric{
 		countMetric("goals", "Goals", "attack", goals),
+		countMetric("disallowed_goals", "Disallowed Goals", "attack", disallowedGoals),
 		countMetric("shots_total", "Total Shots", "attack", shots),
 		countMetric("shots_on_target", "Shots on Target", "attack", shotsOnTarget),
 		ratioMetric("shot_accuracy_pct", "Shot Accuracy %", "attack", shotsOnTarget, shots,

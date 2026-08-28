@@ -104,6 +104,8 @@ type teamPerformanceIntelligence struct {
 	Attacking     metricSection        `json:"attacking"`
 	Defensive     metricSection        `json:"defensive"`
 	Transition    metricSection        `json:"transition"`
+	Scoring       scoringPrediction    `json:"scoring_prediction"`
+	Possession    possessionLevels     `json:"possession_levels"`
 	Diagnosis     performanceDiagnosis `json:"diagnosis"`
 	ZoneFrequency map[string]int       `json:"zone_frequency"`
 }
@@ -162,17 +164,22 @@ func GetMatchPerformanceReport(c *fiber.Ctx) error {
 
 	homeStrengths, homeWeaknesses := diagnoseTeam(homeBundle, awayBundle, inputs.ClipEventIDs)
 	awayStrengths, awayWeaknesses := diagnoseTeam(awayBundle, homeBundle, inputs.ClipEventIDs)
+	homeScoring, awayScoring := computeScoringPredictions(homeEvents, awayEvents)
+	homePossession := computePossessionLevels(homeEvents, awayEvents)
+	awayPossession := computePossessionLevels(awayEvents, homeEvents)
 
 	teams := []teamPerformanceIntelligence{
 		{
 			ClubID: inputs.Match.HomeClubID, TeamName: inputs.Match.HomeClub.Name, IsHomeTeam: true,
 			Attacking: homeBundle.Attacking, Defensive: homeBundle.Defensive, Transition: homeBundle.Transition,
+			Scoring: homeScoring, Possession: homePossession,
 			Diagnosis:     performanceDiagnosis{Strengths: homeStrengths, Weaknesses: homeWeaknesses},
 			ZoneFrequency: zoneFrequency(homeEvents),
 		},
 		{
 			ClubID: inputs.Match.AwayClubID, TeamName: inputs.Match.AwayClub.Name, IsHomeTeam: false,
 			Attacking: awayBundle.Attacking, Defensive: awayBundle.Defensive, Transition: awayBundle.Transition,
+			Scoring: awayScoring, Possession: awayPossession,
 			Diagnosis:     performanceDiagnosis{Strengths: awayStrengths, Weaknesses: awayWeaknesses},
 			ZoneFrequency: zoneFrequency(awayEvents),
 		},

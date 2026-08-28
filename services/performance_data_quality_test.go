@@ -6,10 +6,10 @@ import (
 	"afrigoals.com/models"
 )
 
-func TestComputeDataQuality_ComponentsSumToOverallAverage(t *testing.T) {
+func TestComputeDataQuality_OverallUsesTaggingComponentsOnly(t *testing.T) {
 	events := []models.AnalysisEvent{
 		{ID: 1, Type: "tackle", EventTypeID: uintPtr(1), PlayerID: uintPtr(1), PitchZone: strPtr("def-left")},
-		{ID: 2, Type: "pass_completed", EventTypeID: uintPtr(2), PlayerID: nil},
+		{ID: 2, Type: "pass_completed", EventTypeID: uintPtr(2), PlayerID: uintPtr(2), SecondaryPlayerID: uintPtr(3), PitchZone: strPtr("mid-center")},
 	}
 	eventTypesByValue := map[string]models.EventType{
 		"tackle":         {Value: "tackle", RequiresPlayer: true, Priority: models.EventPriorityHigh},
@@ -18,13 +18,15 @@ func TestComputeDataQuality_ComponentsSumToOverallAverage(t *testing.T) {
 
 	report := computeDataQuality(events, nil, map[uint]bool{}, eventTypesByValue)
 
-	var sum float64
-	for _, c := range report.Components {
-		sum += c.Pct
+	if report.OverallCompletenessPct != 100 {
+		t.Fatalf("expected complete tagging to show 100%% overall, got %.4f", report.OverallCompletenessPct)
 	}
-	want := sum / float64(len(report.Components))
-	if report.OverallCompletenessPct != want {
-		t.Fatalf("expected overall %.4f to equal the mean of components %.4f", report.OverallCompletenessPct, want)
+	physicalStats, ok := dataQualityComponentByKey(report.Components, "physical_stats_coverage")
+	if !ok {
+		t.Fatalf("expected physical_stats_coverage component")
+	}
+	if physicalStats.Pct != 0 {
+		t.Fatalf("expected physical stats enrichment to remain separate at 0%%, got %.4f", physicalStats.Pct)
 	}
 }
 
@@ -41,4 +43,13 @@ func TestComputeDataQuality_EmptyMatchIsZeroNotDivideByZero(t *testing.T) {
 			t.Fatalf("expected every component to be 0%% on an empty match, got %+v", c)
 		}
 	}
+}
+
+func dataQualityComponentByKey(components []dataQualityComponent, key string) (dataQualityComponent, bool) {
+	for _, c := range components {
+		if c.Key == key {
+			return c, true
+		}
+	}
+	return dataQualityComponent{}, false
 }

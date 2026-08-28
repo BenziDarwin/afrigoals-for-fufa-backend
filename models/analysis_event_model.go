@@ -76,27 +76,29 @@ func (AnalysisEvent) TableName() string {
 
 // Common event types as constants
 const (
-	EventTypeGoal         = "goal"
-	EventTypeShot         = "shot"
-	EventTypeCross        = "cross"
-	EventTypeFoul         = "foul"
-	EventTypeTackle       = "tackle"
-	EventTypeCorner       = "corner"
-	EventTypeFreeKick     = "freekick"
-	EventTypeOffside      = "offside"
-	EventTypeSave         = "save"
-	EventTypeYellowCard   = "yellow_card"
-	EventTypeRedCard      = "red_card"
-	EventTypeSubstitution = "substitution"
-	EventTypePenalty      = "penalty"
-	EventTypePass         = "pass"
-	EventTypeDribble      = "dribble"
+	EventTypeGoal           = "goal"
+	EventTypeGoalDisallowed = "goal_disallowed"
+	EventTypeShot           = "shot"
+	EventTypeCross          = "cross"
+	EventTypeFoul           = "foul"
+	EventTypeTackle         = "tackle"
+	EventTypeCorner         = "corner"
+	EventTypeFreeKick       = "freekick"
+	EventTypeOffside        = "offside"
+	EventTypeSave           = "save"
+	EventTypeYellowCard     = "yellow_card"
+	EventTypeRedCard        = "red_card"
+	EventTypeSubstitution   = "substitution"
+	EventTypePenalty        = "penalty"
+	EventTypePass           = "pass"
+	EventTypeDribble        = "dribble"
 )
 
 // ValidEventTypes returns a list of valid event types
 func ValidEventTypes() []string {
 	return []string{
 		EventTypeGoal,
+		EventTypeGoalDisallowed,
 		EventTypeShot,
 		EventTypeCross,
 		EventTypeFoul,

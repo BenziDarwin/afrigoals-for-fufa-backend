@@ -32,6 +32,7 @@ INSERT INTO public.event_types
     (name, value, category, shortcut, priority, requires_player, requires_secondary_player)
 VALUES
     ('Goal', 'goal', 'attack', 'g', 'critical', true, true),
+    ('Goal Disallowed', 'goal_disallowed', 'attack', null, 'critical', true, false),
     ('Shot', 'shot', 'attack', 's', 'critical', true, false),
     ('Shot On Target', 'shot_on_target', 'attack', 'o', 'critical', true, true),
     ('Big Chance', 'big_chance', 'attack', 'm', 'critical', true, false),

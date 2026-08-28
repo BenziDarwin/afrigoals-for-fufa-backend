@@ -207,6 +207,9 @@ func buildCoachAssistantContext(ctx context.Context, matchID uint) (string, erro
 
 	homeStrengths, homeWeaknesses := diagnoseTeam(homeBundle, awayBundle, inputs.ClipEventIDs)
 	awayStrengths, awayWeaknesses := diagnoseTeam(awayBundle, homeBundle, inputs.ClipEventIDs)
+	homeScoring, awayScoring := computeScoringPredictions(homeEvents, awayEvents)
+	homePossession := computePossessionLevels(homeEvents, awayEvents)
+	awayPossession := computePossessionLevels(awayEvents, homeEvents)
 
 	playerReports := buildPlayerPerformanceReports(inputs.Players, inputs.Events, inputs.Stats, inputs.ClipEventIDs)
 
@@ -245,8 +248,12 @@ func buildCoachAssistantContext(ctx context.Context, matchID uint) (string, erro
 		}
 	}
 
-	writeTeam := func(name, side string, bundle teamMetricsBundle, strengths, weaknesses []performanceFinding) {
+	writeTeam := func(name, side string, bundle teamMetricsBundle, scoring scoringPrediction, possession possessionLevels, strengths, weaknesses []performanceFinding) {
 		fmt.Fprintf(&b, "== %s (%s) ==\n", name, side)
+		fmt.Fprintf(&b, "Scoring prediction: %.0f%% likely share, threat score %.1f, %s confidence. %s\n",
+			scoring.LikelihoodPct, scoring.ThreatScore, scoring.Confidence, scoring.Evidence)
+		fmt.Fprintf(&b, "Possession levels: overall %.0f%%, defensive third %.0f%%, middle third %.0f%%, attacking third %.0f%%. %s\n",
+			possession.OverallPct, possession.DefensiveThird.SharePct, possession.MiddleThird.SharePct, possession.AttackingThird.SharePct, possession.Notes)
 		writeMetrics("Attacking", bundle.Attacking)
 		writeMetrics("Defensive", bundle.Defensive)
 		writeMetrics("Transition", bundle.Transition)
@@ -255,8 +262,8 @@ func buildCoachAssistantContext(ctx context.Context, matchID uint) (string, erro
 		b.WriteString("\n")
 	}
 
-	writeTeam(inputs.Match.HomeClub.Name, "Home", homeBundle, homeStrengths, homeWeaknesses)
-	writeTeam(inputs.Match.AwayClub.Name, "Away", awayBundle, awayStrengths, awayWeaknesses)
+	writeTeam(inputs.Match.HomeClub.Name, "Home", homeBundle, homeScoring, homePossession, homeStrengths, homeWeaknesses)
+	writeTeam(inputs.Match.AwayClub.Name, "Away", awayBundle, awayScoring, awayPossession, awayStrengths, awayWeaknesses)
 
 	if len(playerReports) > 0 {
 		b.WriteString("Player performance (headline metrics are only comparable within the same position group):\n")

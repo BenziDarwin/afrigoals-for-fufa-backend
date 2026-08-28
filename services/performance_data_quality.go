@@ -16,10 +16,10 @@ type dataQualityReport struct {
 	Components             []dataQualityComponent `json:"components"`
 }
 
-// computeDataQuality scores six independent, auditable completeness signals
-// and averages them (simple arithmetic mean, reproducible from Components -
-// never an opaque single number), so the report never presents weakly
-// tagged data as high-confidence analysis:
+// computeDataQuality scores independent, auditable completeness signals. The
+// headline OverallCompletenessPct is intentionally limited to tagging
+// completeness, so optional clip/physical-stat enrichment does not make a
+// fully tagged event set look incomplete.
 //
 //  1. event_type_linked: EventTypeID != nil
 //  2. player_attribution: PlayerID != nil, of events whose matched
@@ -85,14 +85,7 @@ func computeDataQuality(events []models.AnalysisEvent, stats []models.AnalysisEv
 		componentPct("physical_stats_coverage", "Physical stats attached", physicalStatsPresent, total),
 	}
 
-	var sum float64
-	for _, c := range components {
-		sum += c.Pct
-	}
-	overall := 0.0
-	if len(components) > 0 {
-		overall = sum / float64(len(components))
-	}
+	overall := averageApplicableComponents(components[:4])
 
 	return dataQualityReport{
 		OverallCompletenessPct: overall,
@@ -101,9 +94,24 @@ func computeDataQuality(events []models.AnalysisEvent, stats []models.AnalysisEv
 	}
 }
 
-// componentPct returns a zero-value component (0/0, 0%) rather than
-// dividing by zero when a signal has no applicable denominator in this
-// match (e.g. no events require a secondary player).
+func averageApplicableComponents(components []dataQualityComponent) float64 {
+	var sum float64
+	var count int
+	for _, c := range components {
+		if c.Total == 0 {
+			continue
+		}
+		sum += c.Pct
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return sum / float64(count)
+}
+
+// componentPct returns a zero-value component (0/0, 0%) rather than dividing
+// by zero when a signal has no applicable denominator in this match.
 func componentPct(key, label string, present, total int) dataQualityComponent {
 	if total == 0 {
 		return dataQualityComponent{Key: key, Label: label, Present: 0, Total: 0, Pct: 0}

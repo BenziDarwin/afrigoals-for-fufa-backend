@@ -6,8 +6,8 @@ import (
 	"afrigoals.com/models"
 )
 
-func uintPtr(v uint) *uint       { return &v }
-func strPtr(v string) *string    { return &v }
+func uintPtr(v uint) *uint        { return &v }
+func strPtr(v string) *string     { return &v }
 func floatPtr(v float64) *float64 { return &v }
 
 func TestResolveEventClub_PrefersTeamID(t *testing.T) {
@@ -72,11 +72,58 @@ func TestComputeAttackingMetrics_ShotAccuracy(t *testing.T) {
 		t.Fatalf("expected shots_on_target=2, got %+v", shotsOnTarget)
 	}
 	accuracy, ok := metricByKey(section, "shot_accuracy_pct")
-	if !ok || accuracy.Value == nil || *accuracy.Value != 50 {
-		t.Fatalf("expected shot_accuracy_pct=50, got %+v", accuracy)
+	if !ok || accuracy.Value == nil || *accuracy.Value != confidenceScaledPercent(2, 4) {
+		t.Fatalf("expected confidence-scaled shot_accuracy_pct, got %+v", accuracy)
 	}
 	if accuracy.Status != StatusMeasured {
 		t.Fatalf("expected shot_accuracy_pct to be measured, got %s", accuracy.Status)
+	}
+}
+
+func TestComputeAttackingMetrics_DisallowedGoalIsSeparateFromValidGoals(t *testing.T) {
+	section := computeAttackingMetrics([]models.AnalysisEvent{
+		{ID: 1, Type: "goal"},
+		{ID: 2, Type: "goal_disallowed"},
+		{ID: 3, Type: "shot_on_target"},
+	})
+
+	goals, ok := metricByKey(section, "goals")
+	if !ok || goals.Value == nil || *goals.Value != 1 {
+		t.Fatalf("expected valid goals=1, got %+v", goals)
+	}
+	disallowed, ok := metricByKey(section, "disallowed_goals")
+	if !ok || disallowed.Value == nil || *disallowed.Value != 1 {
+		t.Fatalf("expected disallowed_goals=1, got %+v", disallowed)
+	}
+	bigChances, ok := metricByKey(section, "big_chances")
+	if !ok || bigChances.Value == nil || *bigChances.Value != 3 {
+		t.Fatalf("expected goals, disallowed goals and shots on target to count as big chances, got %+v", bigChances)
+	}
+}
+
+func TestRatioMetric_ScalesSmallPerfectSampleBelowLargerStrongSample(t *testing.T) {
+	oneOfOne := ratioMetric("shot_accuracy_pct", "Shot Accuracy %", "attack",
+		[]models.AnalysisEvent{{ID: 1, Type: "shot_on_target"}},
+		[]models.AnalysisEvent{{ID: 1, Type: "shot_on_target"}},
+		"",
+	)
+	sevenOfNine := ratioMetric("shot_accuracy_pct", "Shot Accuracy %", "attack",
+		[]models.AnalysisEvent{
+			{ID: 2, Type: "shot_on_target"}, {ID: 3, Type: "shot_on_target"}, {ID: 4, Type: "shot_on_target"}, {ID: 5, Type: "shot_on_target"},
+			{ID: 6, Type: "shot_on_target"}, {ID: 7, Type: "shot_on_target"}, {ID: 8, Type: "shot_on_target"},
+		},
+		[]models.AnalysisEvent{
+			{ID: 2, Type: "shot_on_target"}, {ID: 3, Type: "shot_on_target"}, {ID: 4, Type: "shot_on_target"}, {ID: 5, Type: "shot_on_target"},
+			{ID: 6, Type: "shot_on_target"}, {ID: 7, Type: "shot_on_target"}, {ID: 8, Type: "shot_on_target"}, {ID: 9, Type: "shot"}, {ID: 10, Type: "shot"},
+		},
+		"",
+	)
+
+	if oneOfOne.Value == nil || sevenOfNine.Value == nil {
+		t.Fatalf("expected both metrics to have values")
+	}
+	if *sevenOfNine.Value <= *oneOfOne.Value {
+		t.Fatalf("expected larger strong sample to outrank tiny perfect sample, got 7/9=%v 1/1=%v", *sevenOfNine.Value, *oneOfOne.Value)
 	}
 }
 
@@ -104,9 +151,9 @@ func TestComputeAttackingMetrics_UnavailableMetricsAlwaysNilValue(t *testing.T) 
 
 func TestClassifyOutcome_RecognizedAndUnrecognizedStrings(t *testing.T) {
 	cases := []struct {
-		outcome           *string
-		wantSuccess       bool
-		wantClassified    bool
+		outcome        *string
+		wantSuccess    bool
+		wantClassified bool
 	}{
 		{strPtr("Successful"), true, true},
 		{strPtr("failed"), false, true},
@@ -133,8 +180,8 @@ func TestEstimatedOutcomeRateMetric_StatusIsEstimatedNotMeasured(t *testing.T) {
 	if m.Status != StatusEstimated {
 		t.Fatalf("expected StatusEstimated, got %s", m.Status)
 	}
-	if m.Value == nil || *m.Value != 50 {
-		t.Fatalf("expected 50%%, got %+v", m.Value)
+	if m.Value == nil || *m.Value != confidenceScaledPercent(1, 2) {
+		t.Fatalf("expected confidence-scaled 50%%, got %+v", m.Value)
 	}
 }
 
@@ -148,8 +195,8 @@ func TestEstimatedOutcomeRateMetric_UnclassifiedExcludedFromDenominator(t *testi
 	if m.SampleSize != 1 {
 		t.Fatalf("expected sample size 1 (only the classifiable event), got %d", m.SampleSize)
 	}
-	if m.Value == nil || *m.Value != 100 {
-		t.Fatalf("expected 100%%, got %+v", m.Value)
+	if m.Value == nil || *m.Value != confidenceScaledPercent(1, 1) {
+		t.Fatalf("expected confidence-scaled 100%%, got %+v", m.Value)
 	}
 }
 
