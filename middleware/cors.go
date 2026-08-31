@@ -11,6 +11,9 @@ import (
 func CORS() fiber.Handler {
 	// Read allowed origins from environment or config
 	allowedOrigins := os.Getenv("ALLOWED_ORIGINS") // e.g., "https://example.com,https://admin.example.com"
+	if strings.TrimSpace(allowedOrigins) == "" {
+		allowedOrigins = "http://localhost:3000,http://127.0.0.1:3000"
+	}
 
 	return func(c *fiber.Ctx) error {
 		origin := c.Get("Origin")

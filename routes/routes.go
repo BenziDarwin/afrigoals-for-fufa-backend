@@ -351,7 +351,9 @@ func SetupRoutes(app *fiber.App) {
 	analystMatches := api.Group("/analyst-matches/:match_id")
 	{
 		analystMatches.Get("/videos", getCache, services.ListMatchVideos)
-		analystMatches.Get("/clips", getCache, services.ListMatchClips)
+		// Clip objects live in R2 and are mutated by generate/delete endpoints;
+		// do not cache this list or deleted clips can reappear until cache expiry.
+		analystMatches.Get("/clips", services.ListMatchClips)
 		analystMatches.Get("/players", getCache, services.GetMatchRosterPlayers)
 		analystMatches.Get("/event-types", getCache, services.ListEventTypes)
 		analystMatches.Get("/analysis-events", getCache, services.ListAnalysisEvents)
@@ -439,6 +441,7 @@ func SetupRoutes(app *fiber.App) {
 
 			// Clip operations
 			analystMatchesWrite.Post("/clips/cut-by-window", services.CutClipByWindow)
+			analystMatchesWrite.Post("/clips/cut-by-filter", services.CutClipsByFilter)
 			analystMatchesWrite.Delete("/clips/:event_id", services.DeleteMatchClip)
 
 			// Analysis events

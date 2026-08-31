@@ -18,9 +18,10 @@ func ListAnalysisEvents(c *fiber.Ctx) error {
 	matchID := c.Params("match_id")
 
 	var events []models.AnalysisEvent
-	if err := database.DB.
-		Where("match_id = ?", matchID).
-		Preload("Stats").
+	q := database.DB.Where("match_id = ?", matchID)
+	q = applyAnalysisEventFilters(c, q)
+
+	if err := q.Preload("Stats").
 		Order("timestamp_seconds ASC").
 		Find(&events).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -36,6 +37,70 @@ func ListAnalysisEvents(c *fiber.Ctx) error {
 			"count":  len(events),
 		},
 	})
+}
+
+func applyAnalysisEventFilters(c *fiber.Ctx, q *gorm.DB) *gorm.DB {
+	if types := splitCSVQuery(c.Query("type")); len(types) > 0 {
+		q = q.Where("type IN ?", types)
+	}
+	if eventTypeIDs := parseUintCSVQuery(c.Query("event_type_id")); len(eventTypeIDs) > 0 {
+		q = q.Where("event_type_id IN ?", eventTypeIDs)
+	}
+	if teamIDs := parseUintCSVQuery(c.Query("team_id")); len(teamIDs) > 0 {
+		q = q.Where("team_id IN ?", teamIDs)
+	}
+	if playerIDs := parseUintCSVQuery(c.Query("player_id")); len(playerIDs) > 0 {
+		q = q.Where("player_id IN ?", playerIDs)
+	}
+	if videoIDs := parseUintCSVQuery(c.Query("video_id")); len(videoIDs) > 0 {
+		q = q.Where("video_id IN ?", videoIDs)
+	}
+	if outcomes := splitCSVQuery(c.Query("outcome")); len(outcomes) > 0 {
+		q = q.Where("outcome IN ?", outcomes)
+	}
+	if pitchZones := splitCSVQuery(c.Query("pitch_zone")); len(pitchZones) > 0 {
+		q = q.Where("pitch_zone IN ?", pitchZones)
+	}
+	if minTimestamp, err := strconv.ParseFloat(strings.TrimSpace(c.Query("min_timestamp_seconds")), 64); err == nil {
+		q = q.Where("timestamp_seconds >= ?", minTimestamp)
+	}
+	if maxTimestamp, err := strconv.ParseFloat(strings.TrimSpace(c.Query("max_timestamp_seconds")), 64); err == nil {
+		q = q.Where("timestamp_seconds <= ?", maxTimestamp)
+	}
+	if hasClip := strings.TrimSpace(c.Query("has_clip")); hasClip != "" {
+		if value, err := strconv.ParseBool(hasClip); err == nil {
+			if value {
+				q = q.Where("clip_url IS NOT NULL AND clip_url <> ''")
+			} else {
+				q = q.Where("clip_url IS NULL OR clip_url = ''")
+			}
+		}
+	}
+	return q
+}
+
+func splitCSVQuery(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func parseUintCSVQuery(value string) []uint {
+	parts := splitCSVQuery(value)
+	out := make([]uint, 0, len(parts))
+	for _, part := range parts {
+		id, err := strconv.ParseUint(part, 10, 32)
+		if err == nil && id > 0 {
+			out = append(out, uint(id))
+		}
+	}
+	return out
 }
 
 func ListEventTypes(c *fiber.Ctx) error {

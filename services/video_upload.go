@@ -24,7 +24,9 @@ import (
 	"time"
 )
 
-var clipCutSemaphore = make(chan struct{}, 1)
+const maxClipsPerBatch = 10
+
+var clipCutSemaphore = make(chan struct{}, maxClipsPerBatch)
 
 /*
 ===========================================================
@@ -780,6 +782,189 @@ func CutClipByWindow(c *fiber.Ctx) error {
 	})
 }
 
+// CutClipsByFilter generates clips for every matching analysis event in one
+// request. It accepts the same filters as GET /analysis-events, plus:
+// event_id=1,2,3, limit=10, pre_seconds=5, post_seconds=10, skip_existing=true.
+func CutClipsByFilter(c *fiber.Ctx) error {
+	_, err := middleware.GetUserFromContext(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Unauthorized",
+		})
+	}
+
+	matchIDUint := mustParseUint(c.Params("match_id"))
+	if matchIDUint == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid match_id",
+		})
+	}
+
+	preSeconds, _ := strconv.Atoi(c.Query("pre_seconds", "5"))
+	postSeconds, _ := strconv.Atoi(c.Query("post_seconds", "10"))
+	limit, _ := strconv.Atoi(c.Query("limit", strconv.Itoa(maxClipsPerBatch)))
+	skipExisting := true
+	if raw := strings.TrimSpace(c.Query("skip_existing")); raw != "" {
+		if parsed, err := strconv.ParseBool(raw); err == nil {
+			skipExisting = parsed
+		}
+	}
+	if preSeconds < 0 {
+		preSeconds = 0
+	}
+	if postSeconds < 0 {
+		postSeconds = 0
+	}
+	if limit < 1 || limit > maxClipsPerBatch {
+		limit = maxClipsPerBatch
+	}
+
+	q := database.DB.Where("match_id = ?", matchIDUint)
+	q = applyAnalysisEventFilters(c, q)
+	if eventIDs := parseUintCSVQuery(c.Query("event_id")); len(eventIDs) > 0 {
+		q = q.Where("id IN ?", eventIDs)
+	}
+
+	var events []models.AnalysisEvent
+	if err := q.Order("timestamp_seconds ASC").Limit(limit).Find(&events).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "Failed to load events",
+		})
+	}
+	if len(events) == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "No matching events found",
+		})
+	}
+
+	videoIDs := make([]uint, 0)
+	seenVideoIDs := map[uint]bool{}
+	for _, event := range events {
+		if event.VideoID != nil && *event.VideoID != 0 && !seenVideoIDs[*event.VideoID] {
+			seenVideoIDs[*event.VideoID] = true
+			videoIDs = append(videoIDs, *event.VideoID)
+		}
+	}
+
+	videosByID := map[uint]models.Video{}
+	if len(videoIDs) > 0 {
+		var videos []models.Video
+		if err := database.DB.Where("match_id = ? AND id IN ?", matchIDUint, videoIDs).Find(&videos).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+				"error": "Failed to load videos",
+			})
+		}
+		for _, video := range videos {
+			videosByID[video.ID] = video
+		}
+	}
+
+	type batchClipResult struct {
+		Index    int       `json:"index"`
+		EventID  uint      `json:"event_id"`
+		Status   string    `json:"status"`
+		Existing bool      `json:"existing"`
+		Clip     fiber.Map `json:"clip,omitempty"`
+		Error    string    `json:"error,omitempty"`
+	}
+
+	results := make([]batchClipResult, len(events))
+	var wg sync.WaitGroup
+	for index, event := range events {
+		index, event := index, event
+		results[index] = batchClipResult{Index: index, EventID: event.ID, Status: "pending"}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx := context.Background()
+
+			if skipExisting {
+				if exists, clipURL, err := headClipObject(ctx, matchIDUint, event.ID); err == nil && exists {
+					results[index] = batchClipResult{
+						Index:    index,
+						EventID:  event.ID,
+						Status:   "completed",
+						Existing: true,
+						Clip:     buildMatchClipResponse(matchIDUint, event.ID, clipURL, event),
+					}
+					return
+				}
+			}
+
+			if event.VideoID == nil {
+				results[index] = batchClipResult{Index: index, EventID: event.ID, Status: "failed", Error: "Event has no linked video"}
+				return
+			}
+			video, ok := videosByID[*event.VideoID]
+			if !ok {
+				results[index] = batchClipResult{Index: index, EventID: event.ID, Status: "failed", Error: "Match video not found"}
+				return
+			}
+
+			videoURL := ""
+			if video.VideoURL != nil && *video.VideoURL != "" {
+				videoURL = *video.VideoURL
+			} else {
+				videoURL = video.URL
+			}
+			if strings.TrimSpace(videoURL) == "" {
+				results[index] = batchClipResult{Index: index, EventID: event.ID, Status: "failed", Error: "Video URL missing"}
+				return
+			}
+
+			startSec := int(event.TimestampSeconds) - preSeconds
+			if startSec < 0 {
+				startSec = 0
+			}
+			durationSec := int(event.TimestampSeconds) + postSeconds - startSec
+			if durationSec <= 0 {
+				durationSec = 1
+			}
+
+			_, clipURL, err := cutClipToR2(ctx, matchIDUint, event.ID, videoURL, startSec, durationSec)
+			if err != nil {
+				results[index] = batchClipResult{Index: index, EventID: event.ID, Status: "failed", Error: err.Error()}
+				return
+			}
+
+			_ = database.DB.Model(&models.AnalysisEvent{}).
+				Where("match_id = ? AND id = ?", matchIDUint, event.ID).
+				Update("clip_url", clipURL).Error
+			event.ClipURL = &clipURL
+
+			results[index] = batchClipResult{
+				Index:    index,
+				EventID:  event.ID,
+				Status:   "completed",
+				Existing: false,
+				Clip:     buildMatchClipResponse(matchIDUint, event.ID, clipURL, event),
+			}
+		}()
+	}
+	wg.Wait()
+
+	completed := 0
+	failed := 0
+	for _, result := range results {
+		if result.Status == "completed" {
+			completed++
+		} else if result.Status == "failed" {
+			failed++
+		}
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"success": failed == 0,
+		"data": fiber.Map{
+			"results":   results,
+			"requested": len(events),
+			"completed": completed,
+			"failed":    failed,
+		},
+	})
+}
+
 // buildMatchClipResponse shapes a clip as the frontend's MatchClip type
 // expects, with id set equal to event_id since that's the clip's real
 // identity now that there's no auto-increment DB row.
@@ -801,8 +986,8 @@ func buildMatchClipResponse(matchID uint, eventID uint, clipURL string, event mo
 
 // cutClipToR2 downloads the source video (reusing an in-flight download for
 // the same URL, see acquireSourceVideo), cuts the requested window with
-// ffmpeg, and uploads the result to R2. Actual cutting is serialized to one
-// at a time via clipCutSemaphore.
+// ffmpeg, and uploads the result to R2. Actual cutting is bounded by
+// clipCutSemaphore so batch requests cannot start unbounded ffmpeg processes.
 func cutClipToR2(ctx context.Context, matchID uint, eventID uint, videoURL string, startSec int, durationSec int) (string, string, error) {
 	clipsDir := filepath.Join(os.TempDir(), "afrigoals-clips")
 	if err := os.MkdirAll(clipsDir, 0755); err != nil {

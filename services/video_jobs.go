@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -50,6 +51,14 @@ type StoredVideoJobCreateRequest struct {
 	Status           string `json:"status,omitempty"`
 	OriginalFilename string `json:"original_filename,omitempty"`
 	ModelMessage     string `json:"model_message,omitempty"`
+}
+
+type VideoMaskRegion struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+	Label  string  `json:"label,omitempty"`
 }
 
 // =======================
@@ -232,6 +241,83 @@ func parseMatchIDParam(c *fiber.Ctx) (uint, error) {
 	return uint(matchID64), nil
 }
 
+func parseVideoMaskRegions(raw string) []VideoMaskRegion {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	var regions []VideoMaskRegion
+	if err := json.Unmarshal([]byte(raw), &regions); err != nil {
+		return nil
+	}
+
+	valid := make([]VideoMaskRegion, 0, len(regions))
+	for _, region := range regions {
+		if region.Width <= 0 || region.Height <= 0 {
+			continue
+		}
+		if region.X < 0 {
+			region.X = 0
+		}
+		if region.Y < 0 {
+			region.Y = 0
+		}
+		if region.X > 1 {
+			region.X = 1
+		}
+		if region.Y > 1 {
+			region.Y = 1
+		}
+		if region.Width > 1-region.X {
+			region.Width = 1 - region.X
+		}
+		if region.Height > 1-region.Y {
+			region.Height = 1 - region.Y
+		}
+		if region.Width > 0 && region.Height > 0 {
+			valid = append(valid, region)
+		}
+	}
+	return valid
+}
+
+func burnVideoMaskRegions(inputPath string, outputPath string, regions []VideoMaskRegion) error {
+	filters := make([]string, 0, len(regions))
+	for _, region := range regions {
+		filters = append(filters, fmt.Sprintf(
+			"drawbox=x=iw*%.6f:y=ih*%.6f:w=iw*%.6f:h=ih*%.6f:color=black@1:t=fill",
+			region.X,
+			region.Y,
+			region.Width,
+			region.Height,
+		))
+	}
+	if len(filters) == 0 {
+		return nil
+	}
+
+	cmd := exec.Command(
+		"ffmpeg",
+		"-y",
+		"-i", inputPath,
+		"-vf", strings.Join(filters, ","),
+		"-c:v", "libx264",
+		"-preset", "veryfast",
+		"-crf", "23",
+		"-pix_fmt", "yuv420p",
+		"-c:a", "copy",
+		"-movflags", "+faststart",
+		outputPath,
+	)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // =======================
 // Handlers
 // =======================
@@ -276,6 +362,25 @@ func UploadMatchVideoToModelsAndStoreJob(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to finalize temp video file"})
 	}
 
+	modelVideoPath := videoTmpPath
+	if regions := parseVideoMaskRegions(c.FormValue("mask_regions")); len(regions) > 0 {
+		maskedTmp, err := os.CreateTemp("", "afrigoals-model-video-masked-*"+filepath.Ext(fileHeader.Filename))
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "failed to create masked temp video file"})
+		}
+		maskedTmpPath := maskedTmp.Name()
+		_ = maskedTmp.Close()
+		defer os.Remove(maskedTmpPath)
+
+		if err := burnVideoMaskRegions(videoTmpPath, maskedTmpPath, regions); err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"error":  "failed to apply video mask regions",
+				"detail": err.Error(),
+			})
+		}
+		modelVideoPath = maskedTmpPath
+	}
+
 	// forward to model server
 	modelURL := strings.TrimSpace(os.Getenv("MODEL_SERVER_UPLOAD_URL"))
 	if modelURL == "" {
@@ -289,7 +394,7 @@ func UploadMatchVideoToModelsAndStoreJob(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to create multipart"})
 	}
-	videoFile, err := os.Open(videoTmpPath)
+	videoFile, err := os.Open(modelVideoPath)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to reopen upload for model forwarding"})
 	}
