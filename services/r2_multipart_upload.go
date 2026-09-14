@@ -220,7 +220,6 @@ func CompleteR2MultipartVideoUpload(c *fiber.Ctx) error {
 		Parts            []multipartUploadPart `json:"parts"`
 		OriginalFilename string                `json:"original_filename"`
 		DurationSec      *int                  `json:"duration_sec"`
-		CreateLMV        bool                  `json:"create_lmv"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
@@ -284,15 +283,6 @@ func CompleteR2MultipartVideoUpload(c *fiber.Ctx) error {
 		originalFilename = upload.FileName
 	}
 	videoURL := publicR2ObjectURL(cfg, upload.StorageKey)
-	var lmvWarning string
-	if req.CreateLMV {
-		_, lmvURL, err := createLMVFromR2Object(ctx, cfg, upload.StorageKey)
-		if err != nil {
-			lmvWarning = err.Error()
-		} else {
-			videoURL = lmvURL
-		}
-	}
 
 	video := models.Video{
 		MatchID:          upload.MatchID,
@@ -340,7 +330,6 @@ func CompleteR2MultipartVideoUpload(c *fiber.Ctx) error {
 			"video":       video,
 			"match_video": matchVideo,
 			"upload":      upload,
-			"lmv_warning": lmvWarning,
 		},
 	})
 }

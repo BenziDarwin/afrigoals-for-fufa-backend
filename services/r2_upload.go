@@ -1,7 +1,6 @@
 package services
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -111,7 +110,6 @@ func CompleteR2MatchVideoUpload(c *fiber.Ctx) error {
 		ObjectKey        string `json:"object_key"`
 		OriginalFilename string `json:"original_filename"`
 		DurationSec      *int   `json:"duration_sec"`
-		CreateLMV        bool   `json:"create_lmv"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid request body"})
@@ -126,15 +124,6 @@ func CompleteR2MatchVideoUpload(c *fiber.Ctx) error {
 	}
 
 	videoURL := publicR2ObjectURL(cfg, req.ObjectKey)
-	var lmvWarning string
-	if req.CreateLMV {
-		_, lmvURL, err := createLMVFromR2Object(context.Background(), cfg, req.ObjectKey)
-		if err != nil {
-			lmvWarning = err.Error()
-		} else {
-			videoURL = lmvURL
-		}
-	}
 	originalFilename := req.OriginalFilename
 
 	video := models.Video{
@@ -174,7 +163,6 @@ func CompleteR2MatchVideoUpload(c *fiber.Ctx) error {
 		"data": fiber.Map{
 			"video":       video,
 			"match_video": matchVideo,
-			"lmv_warning": lmvWarning,
 		},
 	})
 }
