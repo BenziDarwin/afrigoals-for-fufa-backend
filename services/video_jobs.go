@@ -3,11 +3,15 @@ package services
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +19,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
@@ -200,6 +206,14 @@ func compactJSON(raw []byte) string {
 	return string(b)
 }
 
+func mustMarshalJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return []byte("{}")
+	}
+	return b
+}
+
 // Extract annotated_video/siglip_html from result JSON (supports direct or nested "video")
 func extractArtifactsFromResult(result any) (annotated string, siglip string) {
 	m, ok := result.(map[string]any)
@@ -230,6 +244,106 @@ func extractArtifactsFromResult(result any) (annotated string, siglip string) {
 	}
 
 	return annotated, siglip
+}
+
+func setResultString(result any, key string, value string) {
+	if value == "" {
+		return
+	}
+
+	m, ok := result.(map[string]any)
+	if !ok {
+		return
+	}
+
+	m[key] = value
+	if vv, ok := m["video"].(map[string]any); ok {
+		vv[key] = value
+	}
+}
+
+func modelArtifactURL(artifactType string, jobID string) (string, error) {
+	artifactTpl := strings.TrimSpace(os.Getenv("MODEL_SERVER_ARTIFACT_URL"))
+	if artifactTpl == "" {
+		uploadURL := strings.TrimSpace(os.Getenv("MODEL_SERVER_UPLOAD_URL"))
+		if uploadURL != "" {
+			artifactTpl = strings.TrimSuffix(uploadURL, "/upload") + "/job/:job_id/download/:artifact_type"
+		}
+	}
+	if artifactTpl == "" {
+		return "", fmt.Errorf("MODEL_SERVER_ARTIFACT_URL not set")
+	}
+
+	artifactURL := strings.ReplaceAll(artifactTpl, ":job_id", jobID)
+	artifactURL = strings.ReplaceAll(artifactURL, ":artifact_type", artifactType)
+	return artifactURL, nil
+}
+
+func uploadModelArtifactToR2(ctx context.Context, matchID uint, jobID string, artifactType string) (string, string, error) {
+	cfg, err := loadR2Config()
+	if err != nil {
+		return "", "", err
+	}
+
+	client, err := newR2S3Client(ctx, cfg)
+	if err != nil {
+		return "", "", err
+	}
+
+	artifactURL, err := modelArtifactURL(artifactType, jobID)
+	if err != nil {
+		return "", "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", artifactURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", "", fmt.Errorf("model artifact returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		if artifactType == "annotated_video" {
+			contentType = "video/mp4"
+		} else {
+			contentType = "application/octet-stream"
+		}
+	}
+
+	tmp, err := os.CreateTemp("", "afrigoals-r2-artifact-*.mp4")
+	if err != nil {
+		return "", "", err
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		return "", "", err
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return "", "", err
+	}
+
+	key := fmt.Sprintf("matches/%d/ai-jobs/%s/%s.mp4", matchID, sanitizeObjectName(jobID), sanitizeObjectName(artifactType))
+	if _, err := client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(cfg.Bucket),
+		Key:         aws.String(key),
+		Body:        tmp,
+		ContentType: aws.String(contentType),
+	}); err != nil {
+		return "", "", err
+	}
+
+	return key, publicR2ObjectURL(cfg, key), nil
 }
 
 func parseMatchIDParam(c *fiber.Ctx) (uint, error) {
@@ -282,6 +396,53 @@ func parseVideoMaskRegions(raw string) []VideoMaskRegion {
 	return valid
 }
 
+func copyStoredVideoToTemp(videoURL string, outputPath string) error {
+	videoURL = strings.TrimSpace(videoURL)
+	if videoURL == "" {
+		return fmt.Errorf("selected video has no URL")
+	}
+
+	if strings.HasPrefix(videoURL, "/uploads/") {
+		localPath := "." + filepath.FromSlash(videoURL)
+		src, err := os.Open(localPath)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+
+		dst, err := os.Create(outputPath)
+		if err != nil {
+			return err
+		}
+		defer dst.Close()
+
+		_, err = io.Copy(dst, src)
+		return err
+	}
+
+	if strings.HasPrefix(videoURL, "http://") || strings.HasPrefix(videoURL, "https://") {
+		resp, err := http.Get(videoURL)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("video download returned HTTP %d", resp.StatusCode)
+		}
+
+		dst, err := os.Create(outputPath)
+		if err != nil {
+			return err
+		}
+		defer dst.Close()
+
+		_, err = io.Copy(dst, resp.Body)
+		return err
+	}
+
+	return fmt.Errorf("unsupported video URL: %s", videoURL)
+}
+
 func burnVideoMaskRegions(inputPath string, outputPath string, regions []VideoMaskRegion) error {
 	filters := make([]string, 0, len(regions))
 	for _, region := range regions {
@@ -316,6 +477,90 @@ func burnVideoMaskRegions(inputPath string, outputPath string, regions []VideoMa
 		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func createVideoFormFile(writer *multipart.Writer, fieldName string, filename string) (io.Writer, error) {
+	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(filename)))
+	if contentType == "" || !strings.HasPrefix(contentType, "video/") {
+		contentType = "video/mp4"
+	}
+
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, fieldName, filename))
+	header.Set("Content-Type", contentType)
+
+	return writer.CreatePart(header)
+}
+
+func uploadLocalVideoToModel(matchID uint, userID uint, filename string, videoPath string) (ModelUploadResponse, int, []byte, error) {
+	modelURL := strings.TrimSpace(os.Getenv("MODEL_SERVER_UPLOAD_URL"))
+	if modelURL == "" {
+		return ModelUploadResponse{}, 500, nil, fmt.Errorf("MODEL_SERVER_UPLOAD_URL not set")
+	}
+
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
+
+	req, err := http.NewRequest("POST", modelURL, pr)
+	if err != nil {
+		_ = pr.Close()
+		_ = pw.Close()
+		return ModelUploadResponse{}, 500, nil, fmt.Errorf("failed to create request")
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	go func() {
+		defer pw.Close()
+
+		part, err := createVideoFormFile(writer, "file", filename)
+		if err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("failed to create multipart: %w", err))
+			return
+		}
+
+		videoFile, err := os.Open(videoPath)
+		if err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("failed to open video for model forwarding: %w", err))
+			return
+		}
+		defer videoFile.Close()
+
+		if _, err := io.Copy(part, videoFile); err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("failed to stream video: %w", err))
+			return
+		}
+
+		_ = writer.WriteField("match_id", fmt.Sprintf("%d", matchID))
+		_ = writer.WriteField("requested_by_user_id", fmt.Sprintf("%d", userID))
+		_ = writer.WriteField("use_commentary", "true")
+
+		if err := writer.Close(); err != nil {
+			_ = pw.CloseWithError(fmt.Errorf("failed to finalize multipart: %w", err))
+			return
+		}
+	}()
+
+	client := &http.Client{Timeout: 20 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ModelUploadResponse{}, 502, nil, fmt.Errorf("model server upload failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ModelUploadResponse{}, resp.StatusCode, body, fmt.Errorf("model server returned non-2xx")
+	}
+
+	var up ModelUploadResponse
+	if err := json.Unmarshal(body, &up); err != nil {
+		return ModelUploadResponse{}, 502, body, fmt.Errorf("invalid model server response")
+	}
+	if strings.TrimSpace(up.JobID) == "" {
+		return ModelUploadResponse{}, 502, body, fmt.Errorf("model server did not return job_id")
+	}
+
+	return up, resp.StatusCode, body, nil
 }
 
 // =======================
@@ -390,7 +635,7 @@ func UploadMatchVideoToModelsAndStoreJob(c *fiber.Ctx) error {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	part, err := writer.CreateFormFile("file", fileHeader.Filename)
+	part, err := createVideoFormFile(writer, "file", fileHeader.Filename)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to create multipart"})
 	}
@@ -491,6 +736,129 @@ func UploadMatchVideoToModelsAndStoreJob(c *fiber.Ctx) error {
 		"job_id":  job.JobID,
 		"status":  job.Status,
 		"message": job.ModelMessage,
+	})
+}
+
+// POST /api/v1/analyst-matches/:match_id/videos/:video_id/analyze-with-models
+// Sends the already-selected/stored match video to the model server and stores
+// the resulting job against this match.
+func AnalyzeStoredMatchVideoWithModels(c *fiber.Ctx) error {
+	matchID, err := parseMatchIDParam(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	videoID64, err := strconv.ParseUint(strings.TrimSpace(c.Params("video_id")), 10, 32)
+	if err != nil || videoID64 == 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid video_id"})
+	}
+
+	userID := extractUserID(c.Locals("user"))
+	if userID == 0 {
+		return c.Status(401).JSON(fiber.Map{"error": "unauthorized (user id missing)"})
+	}
+
+	var video models.Video
+	if err := database.DB.Where("match_id = ? AND id = ?", matchID, uint(videoID64)).First(&video).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(404).JSON(fiber.Map{"error": "video not found"})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "failed to fetch video", "detail": err.Error()})
+	}
+
+	videoURL := ""
+	if video.VideoURL != nil && strings.TrimSpace(*video.VideoURL) != "" {
+		videoURL = *video.VideoURL
+	} else {
+		videoURL = video.URL
+	}
+
+	filename := video.Title
+	if video.OriginalFilename != nil && strings.TrimSpace(*video.OriginalFilename) != "" {
+		filename = *video.OriginalFilename
+	}
+	if strings.TrimSpace(filename) == "" {
+		filename = fmt.Sprintf("match-%d-video-%d.mp4", matchID, video.ID)
+	}
+
+	ext := filepath.Ext(filename)
+	if ext == "" {
+		ext = ".mp4"
+	}
+	videoTmp, err := os.CreateTemp("", "afrigoals-stored-model-video-*"+ext)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to create temp video file"})
+	}
+	videoTmpPath := videoTmp.Name()
+	_ = videoTmp.Close()
+	defer os.Remove(videoTmpPath)
+
+	if err := copyStoredVideoToTemp(videoURL, videoTmpPath); err != nil {
+		log.Printf("analyze-with-models: failed to load selected video match_id=%d video_id=%d url=%q err=%v", matchID, video.ID, videoURL, err)
+		return c.Status(502).JSON(fiber.Map{"error": "failed to load selected video", "detail": err.Error()})
+	}
+
+	modelVideoPath := videoTmpPath
+	if regions := parseVideoMaskRegions(c.FormValue("mask_regions")); len(regions) > 0 {
+		maskedTmp, err := os.CreateTemp("", "afrigoals-stored-model-video-masked-*"+ext)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "failed to create masked temp video file"})
+		}
+		maskedTmpPath := maskedTmp.Name()
+		_ = maskedTmp.Close()
+		defer os.Remove(maskedTmpPath)
+
+		if err := burnVideoMaskRegions(videoTmpPath, maskedTmpPath, regions); err != nil {
+			log.Printf("analyze-with-models: failed to apply mask regions match_id=%d video_id=%d err=%v", matchID, video.ID, err)
+			return c.Status(500).JSON(fiber.Map{
+				"error":  "failed to apply video mask regions",
+				"detail": err.Error(),
+			})
+		}
+		modelVideoPath = maskedTmpPath
+	}
+
+	up, statusCode, body, err := uploadLocalVideoToModel(matchID, userID, filename, modelVideoPath)
+	if err != nil {
+		log.Printf(
+			"analyze-with-models: model upload failed match_id=%d video_id=%d model_url=%q status=%d err=%v body=%s",
+			matchID,
+			video.ID,
+			strings.TrimSpace(os.Getenv("MODEL_SERVER_UPLOAD_URL")),
+			statusCode,
+			err,
+			strings.TrimSpace(string(body)),
+		)
+		if len(body) > 0 {
+			return c.Status(502).JSON(fiber.Map{"error": err.Error(), "status": statusCode, "body": string(body)})
+		}
+		return c.Status(statusCode).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	job := models.VideoAnalysisJob{
+		MatchID:           matchID,
+		RequestedByUserID: &userID,
+		JobID:             up.JobID,
+		Status:            normalizeJobStatus(up.Status),
+		OriginalFilename:  filename,
+		ModelMessage:      up.Message,
+		VideoID:           &video.ID,
+	}
+
+	if err := database.DB.Create(&job).Error; err != nil {
+		log.Printf("analyze-with-models: job created but DB persist failed match_id=%d video_id=%d job_id=%s err=%v", matchID, video.ID, up.JobID, err)
+		return c.Status(500).JSON(fiber.Map{
+			"error":  "job created but failed to persist",
+			"job_id": up.JobID,
+			"detail": err.Error(),
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"job_id":   job.JobID,
+		"status":   job.Status,
+		"message":  job.ModelMessage,
+		"video_id": video.ID,
 	})
 }
 
@@ -611,6 +979,40 @@ func GetStoredVideoJob(c *fiber.Ctx) error {
 			return c.Status(404).JSON(fiber.Map{"error": "job not found"})
 		}
 		return c.Status(500).JSON(fiber.Map{"error": "failed to fetch job", "detail": err.Error()})
+	}
+
+	return c.JSON(job)
+}
+
+// POST /api/v1/analyst-matches/:match_id/video-jobs/:job_id/cancel
+// Marks the local stored job as cancelled/failed so the studio stops resuming it.
+func CancelStoredVideoJob(c *fiber.Ctx) error {
+	matchID, err := parseMatchIDParam(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	jobID := strings.TrimSpace(c.Params("job_id"))
+	if jobID == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "missing job_id"})
+	}
+
+	var job models.VideoAnalysisJob
+	if err := database.DB.Where("match_id = ? AND job_id = ?", matchID, jobID).First(&job).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(404).JSON(fiber.Map{"error": "job not found"})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "failed to fetch job", "detail": err.Error()})
+	}
+
+	job.Status = models.JobFailed
+	job.ModelMessage = "Cancelled by user. Stored data was preserved."
+	if zero := 0.0; job.Progress == nil {
+		job.Progress = &zero
+	}
+
+	if err := database.DB.Save(&job).Error; err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to cancel job", "detail": err.Error()})
 	}
 
 	return c.JSON(job)
@@ -743,7 +1145,6 @@ func FetchAndStoreVideoJobResult(c *fiber.Ctx) error {
 	}
 
 	// Persist compact JSON + artifact pointers
-	job.ResultJSON = compactJSON(raw)
 	annotated, siglip := extractArtifactsFromResult(result)
 	if annotated != "" {
 		job.AnnotatedVideoPath = annotated
@@ -751,6 +1152,21 @@ func FetchAndStoreVideoJobResult(c *fiber.Ctx) error {
 	if siglip != "" {
 		job.SiglipHTMLPath = siglip
 	}
+
+	if annotated != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if _, r2URL, err := uploadModelArtifactToR2(ctx, matchID, jobID, "annotated_video"); err != nil {
+			return c.Status(502).JSON(fiber.Map{
+				"error":  "failed to upload annotated video to Cloudflare R2",
+				"detail": err.Error(),
+			})
+		} else {
+			job.AnnotatedVideoPath = r2URL
+			setResultString(result, "annotated_video", r2URL)
+		}
+	}
+	job.ResultJSON = compactJSON(mustMarshalJSON(result))
 
 	// Optional: if result payload contains status/message, update job
 	if m, ok := result.(map[string]any); ok {
@@ -775,6 +1191,68 @@ func FetchAndStoreVideoJobResult(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to persist result", "detail": err.Error()})
 	}
 
+	enriched, err := json.Marshal(result)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to encode enriched result", "detail": err.Error()})
+	}
+
 	c.Set("Content-Type", "application/json")
-	return c.Send(raw)
+	return c.Send(enriched)
+}
+
+// GET /api/v1/analyst-matches/:match_id/video-jobs/:job_id/artifacts/:artifact_type
+// Streams an artifact from the model server through the authenticated Go API.
+func DownloadVideoJobArtifact(c *fiber.Ctx) error {
+	matchID, err := parseMatchIDParam(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	jobID := strings.TrimSpace(c.Params("job_id"))
+	artifactType := strings.TrimSpace(c.Params("artifact_type"))
+	if jobID == "" || artifactType == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "missing job_id or artifact_type"})
+	}
+
+	var job models.VideoAnalysisJob
+	if err := database.DB.Where("match_id = ? AND job_id = ?", matchID, jobID).First(&job).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return c.Status(404).JSON(fiber.Map{"error": "job not found"})
+		}
+		return c.Status(500).JSON(fiber.Map{"error": "failed to fetch job", "detail": err.Error()})
+	}
+
+	if artifactType == "annotated_video" && strings.TrimSpace(job.AnnotatedVideoPath) != "" {
+		return c.Redirect(job.AnnotatedVideoPath, fiber.StatusTemporaryRedirect)
+	}
+
+	artifactURL, err := modelArtifactURL(artifactType, jobID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	req, _ := http.NewRequest("GET", artifactURL, nil)
+	client := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := client.Do(req)
+	if err != nil {
+		return c.Status(502).JSON(fiber.Map{"error": "model server artifact fetch failed", "detail": err.Error()})
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return c.Status(502).JSON(fiber.Map{
+			"error":  "model server returned non-2xx",
+			"status": resp.StatusCode,
+			"body":   string(body),
+		})
+	}
+
+	if contentType := resp.Header.Get("Content-Type"); contentType != "" {
+		c.Set("Content-Type", contentType)
+	}
+	if disposition := resp.Header.Get("Content-Disposition"); disposition != "" {
+		c.Set("Content-Disposition", disposition)
+	}
+	return c.SendStream(resp.Body)
 }

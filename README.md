@@ -90,6 +90,29 @@ POST /api/v1/videos/multipart/cancel
 
 The browser receives only signed part URLs. R2 credentials remain server-side.
 
+## AI video analysis model proxy
+
+The analyst dashboard calls the Go API for model jobs. The Go API forwards the
+video to the FastAPI model service, stores the returned job id against the
+match, polls status, stores the final result JSON, and streams generated
+artifacts back to the dashboard.
+
+Set these environment variables in the Go API:
+
+```bash
+MODEL_SERVER_UPLOAD_URL="http://localhost:8000/api/v1/video/upload"
+MODEL_SERVER_STATUS_URL="http://localhost:8000/api/v1/video/job/:job_id"
+MODEL_SERVER_RESULT_URL="http://localhost:8000/api/v1/video/job/:job_id/result"
+MODEL_SERVER_ARTIFACT_URL="http://localhost:8000/api/v1/video/job/:job_id/download/:artifact_type"
+```
+
+For the deployed Modal model service, replace the host in all four URLs with
+`https://strevor948--afrigoals-api-fastapi-app.modal.run`. The frontend should
+continue calling the Go API; these variables are server-side only.
+
+`MODEL_SERVER_ARTIFACT_URL` is optional when `MODEL_SERVER_UPLOAD_URL` ends with
+`/upload`; the API can derive the artifact URL from it.
+
 ## Database migrations
 
 The schema is owned by `migrations/`. `000001_initial_schema` is the baseline,

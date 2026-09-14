@@ -186,13 +186,13 @@ func SetupRoutes(app *fiber.App) {
 		// moderatorPlayers below calls Use() on the same /players prefix, and
 		// that applies to everything registered after it, so a grouped version
 		// of this route would still be caught by LeagueAdminOrAbove.
+		players.Put("/:id", middleware.ClubManagerOrAbove(), services.UpdatePlayer)
 		players.Delete("/:id", middleware.ClubManagerOrAbove(), services.DeletePlayer)
 
 		moderatorPlayers := players.Group("")
 		moderatorPlayers.Use(middleware.LeagueAdminOrAbove())
 		{
 			moderatorPlayers.Post("", services.CreatePlayer)
-			moderatorPlayers.Put("/:id", services.UpdatePlayer)
 			moderatorPlayers.Post("/transfer", services.TransferPlayer)
 		}
 	}
@@ -426,15 +426,18 @@ func SetupRoutes(app *fiber.App) {
 
 			// NEW: upload to model server + create stored job row in DB
 			analystMatchesWrite.Post("/videos/upload-to-models", services.UploadMatchVideoToModelsAndStoreJob)
+			analystMatchesWrite.Post("/videos/:video_id/analyze-with-models", services.AnalyzeStoredMatchVideoWithModels)
 
 			// Stored job registry (DB)
 			analystMatchesWrite.Post("/video-jobs", services.RegisterStoredMatchVideoJob)
 			analystMatchesWrite.Get("/video-jobs", services.ListStoredMatchVideoJobs)
 			analystMatchesWrite.Get("/video-jobs/:job_id", services.GetStoredVideoJob)
 			analystMatchesWrite.Post("/video-jobs/:job_id/refresh", services.RefreshVideoJobStatus)
+			analystMatchesWrite.Post("/video-jobs/:job_id/cancel", services.CancelStoredVideoJob)
 
 			// NEW: fetch result from model server, optionally store in DB + link video
 			analystMatchesWrite.Get("/video-jobs/:job_id/result", services.FetchAndStoreVideoJobResult)
+			analystMatchesWrite.Get("/video-jobs/:job_id/artifacts/:artifact_type", services.DownloadVideoJobArtifact)
 
 			// Video delete
 			analystMatchesWrite.Delete("/videos/:video_id", services.DeleteMatchVideo)

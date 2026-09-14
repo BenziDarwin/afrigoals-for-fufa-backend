@@ -558,7 +558,7 @@ func GetClubPlayers(c *fiber.Ctx) error {
 	clubID := c.Params("club_id")
 
 	var players []models.Player
-	if err := database.DB.Where("club_id = ?", clubID).Find(&players).Error; err != nil {
+	if err := database.DB.Preload("Stats").Where("club_id = ?", clubID).Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get club players",
 		})
@@ -567,11 +567,18 @@ func GetClubPlayers(c *fiber.Ctx) error {
 	playerList := make([]fiber.Map, len(players))
 	for i, player := range players {
 		playerList[i] = fiber.Map{
-			"id":         player.ID,
-			"uuid":       player.UUID,
-			"name":       player.Name,
-			"club_id":    player.ClubID,
-			"created_at": player.CreatedAt,
+			"id":            player.ID,
+			"uuid":          player.UUID,
+			"name":          player.Name,
+			"jersey_number": player.JerseyNumber,
+			"position":      player.Position,
+			"photo_url":     player.PhotoURL,
+			"date_of_birth": player.DateOfBirth,
+			"nationality":   player.Nationality,
+			"club_id":       player.ClubID,
+			"stats":         player.Stats,
+			"created_at":    player.CreatedAt,
+			"updated_at":    player.UpdatedAt,
 		}
 	}
 

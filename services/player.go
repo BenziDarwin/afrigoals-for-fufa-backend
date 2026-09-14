@@ -315,6 +315,36 @@ func UpdatePlayer(c *fiber.Ctx) error {
 		})
 	}
 
+	user, err := middleware.GetUserFromContext(c)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "Unauthorized",
+		})
+	}
+
+	if !middleware.CanManagePlayer(user, &player) {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "You do not have permission to update this player",
+		})
+	}
+
+	nextClubID := player.ClubID
+	if req.ClubID != nil {
+		nextClubID = *req.ClubID
+		if !middleware.CanManageClub(user, nextClubID) {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error": "You do not have permission to move this player to that club",
+			})
+		}
+	}
+	if req.JerseyNumber != nil {
+		if err := ensureJerseyFree(nextClubID, *req.JerseyNumber, uint(playerID)); err != nil {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+	}
+
 	updates := make(map[string]interface{})
 
 	// Update name if provided
