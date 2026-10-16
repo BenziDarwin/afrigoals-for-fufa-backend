@@ -386,6 +386,7 @@ func SetupRoutes(app *fiber.App) {
 		// inside the handler via canViewMatchPerformance().
 		analystMatches.Post("/ai-assistant/ask", services.AskMatchAssistant)
 		analystMatches.Get("/ai-assistant/insights", services.ListMatchAIInsights)
+		analystMatches.Delete("/ai-assistant/insights/:insight_id", services.DeleteMatchAIInsight)
 
 		// NEW: analyst submits their finished report to the league manager -
 		// same tier as the rest of the analyst write endpoints.

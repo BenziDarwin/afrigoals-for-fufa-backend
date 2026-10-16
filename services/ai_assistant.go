@@ -165,6 +165,30 @@ func ListMatchAIInsights(c *fiber.Ctx) error {
 	})
 }
 
+// DeleteMatchAIInsight removes one saved answer from the specified match.
+func DeleteMatchAIInsight(c *fiber.Ctx) error {
+	matchID, err := strconv.ParseUint(c.Params("match_id"), 10, 32)
+	if err != nil || matchID == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid match ID"})
+	}
+	insightID, err := strconv.ParseUint(c.Params("insight_id"), 10, 32)
+	if err != nil || insightID == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid insight ID"})
+	}
+	user, _, accessErr := loadMatchForAssistantAccess(c, uint(matchID))
+	if accessErr != nil || user == nil {
+		return accessErr
+	}
+	result := database.DB.Where("match_id = ? AND id = ?", matchID, insightID).Delete(&models.MatchAIInsight{})
+	if result.Error != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Could not delete AI insight"})
+	}
+	if result.RowsAffected == 0 {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "AI insight not found"})
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
 func matchAssistantSystemPrompt(matchContext string) string {
 	return "You are a football (soccer) coaching-insights assistant. You are given the same " +
 		"Phase 1 performance report (measured/estimated metrics, evidence-based strengths and " +
