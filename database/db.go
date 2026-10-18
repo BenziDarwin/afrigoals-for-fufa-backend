@@ -81,7 +81,9 @@ func ConnectDB() *gorm.DB {
 		&models.AnalysisEventStats{},   // FK to AnalysisEvent
 		&models.PlayerAnalysisReport{}, // FK to Match & Player
 		&models.VideoAnalysisJob{},     // FK to Match & User
-		&models.MatchAIInsight{},       // FK to Match (loose reference) & User
+		&models.VideoAnalysisReview{},
+		&models.VideoAnalysisReviewRevision{},
+		&models.MatchAIInsight{}, // FK to Match (loose reference) & User
 	)
 	if err != nil {
 		log.Fatal("AutoMigrate failed:", err)

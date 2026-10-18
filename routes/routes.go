@@ -438,6 +438,9 @@ func SetupRoutes(app *fiber.App) {
 
 			// NEW: fetch result from model server, optionally store in DB + link video
 			analystMatchesWrite.Get("/video-jobs/:job_id/result", services.FetchAndStoreVideoJobResult)
+			analystMatchesWrite.Get("/video-jobs/:job_id/review", services.GetVideoAnalysisReview)
+			analystMatchesWrite.Put("/video-jobs/:job_id/review", services.SaveVideoAnalysisReview)
+			analystMatchesWrite.Get("/video-jobs/:job_id/review/export", services.ExportVideoAnalysisReview)
 			analystMatchesWrite.Get("/video-jobs/:job_id/artifacts/:artifact_type", services.DownloadVideoJobArtifact)
 
 			// Video delete

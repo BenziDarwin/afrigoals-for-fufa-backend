@@ -5,3 +5,4 @@ uploads/
 # Go build caches (accidentally committed in 25e536d)
 .gocache/
 .codex-go-build-cache/
+.cache/go-build/

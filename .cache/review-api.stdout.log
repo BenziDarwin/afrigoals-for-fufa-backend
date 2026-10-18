@@ -1,0 +1,15 @@
+
+2026/10/18 12:28:59 [32mF:/Afrigoals/Afrigoals-API/database/initDB.go:39 [33mSLOW SQL >= 200ms
+[0m[31;1m[463.894ms] [33m[rows:1][35m SELECT * FROM "users" WHERE email = 'admin123@example.com' AND "users"."deleted_at" IS NULL ORDER BY "users"."id" LIMIT 1[0m
+
+ ┌───────────────────────────────────────────────────┐ 
+ │                   Fiber v2.52.9                   │ 
+ │               http://127.0.0.1:6767               │ 
+ │       (bound on host 0.0.0.0 and port 6767)       │ 
+ │                                                   │ 
+ │ Handlers ........... 377  Processes ........... 1 │ 
+ │ Prefork ....... Disabled  PID ............. 22912 │ 
+ └───────────────────────────────────────────────────┘ 
+
+12:29:29 | 404 |            0s | 127.0.0.1 | GET | /api/data-analyst/matches/2/video-jobs/a3603322-9b4e-42ab-a825-79353afbe76a/review | -
+12:29:59 | 401 |            0s | 127.0.0.1 | GET | /api/v1/analyst-matches/2/video-jobs/a3603322-9b4e-42ab-a825-79353afbe76a/review | -

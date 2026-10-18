@@ -10,6 +10,7 @@ import (
 	"log"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"os"
@@ -318,6 +319,11 @@ func uploadModelArtifactToR2(ctx context.Context, matchID uint, jobID string, ar
 			contentType = "application/octet-stream"
 		}
 	}
+	extension := ".mp4"
+	if artifactType == "tracking_trace" {
+		extension = ".jsonl"
+		contentType = "application/x-ndjson"
+	}
 
 	tmp, err := os.CreateTemp("", "afrigoals-r2-artifact-*.mp4")
 	if err != nil {
@@ -333,7 +339,7 @@ func uploadModelArtifactToR2(ctx context.Context, matchID uint, jobID string, ar
 		return "", "", err
 	}
 
-	key := fmt.Sprintf("matches/%d/ai-jobs/%s/%s.mp4", matchID, sanitizeObjectName(jobID), sanitizeObjectName(artifactType))
+	key := fmt.Sprintf("matches/%d/ai-jobs/%s/%s%s", matchID, sanitizeObjectName(jobID), sanitizeObjectName(artifactType), extension)
 	if _, err := client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.Bucket),
 		Key:         aws.String(key),
@@ -1018,6 +1024,15 @@ func CancelStoredVideoJob(c *fiber.Ctx) error {
 	return c.JSON(job)
 }
 
+// Allow status polling to survive a Modal cold start without waiting indefinitely.
+func modelStatusTimeout() time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("MODEL_SERVER_STATUS_TIMEOUT_SECONDS")))
+	if err != nil || seconds < 1 || seconds > 600 {
+		return 120 * time.Second
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 // POST /api/v1/analyst-matches/:match_id/video-jobs/:job_id/refresh
 // Calls model server status endpoint, updates DB, returns updated record.
 func RefreshVideoJobStatus(c *fiber.Ctx) error {
@@ -1047,16 +1062,25 @@ func RefreshVideoJobStatus(c *fiber.Ctx) error {
 	}
 	statusURL := strings.ReplaceAll(modelStatusTpl, ":job_id", jobID)
 
-	req, _ := http.NewRequest("GET", statusURL, nil)
-	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequestWithContext(c.UserContext(), "GET", statusURL, nil)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "invalid model status URL"})
+	}
+	client := &http.Client{Timeout: modelStatusTimeout()}
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			return c.Status(504).JSON(fiber.Map{"error": "model server status request timed out; retry refresh", "detail": err.Error()})
+		}
 		return c.Status(502).JSON(fiber.Map{"error": "model server poll failed", "detail": err.Error()})
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return c.Status(502).JSON(fiber.Map{"error": "failed to read model status response", "detail": err.Error()})
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return c.Status(502).JSON(fiber.Map{
 			"error":  "model server returned non-2xx",
@@ -1075,7 +1099,7 @@ func RefreshVideoJobStatus(c *fiber.Ctx) error {
 	job.ModelMessage = st.Message
 	job.Stage = st.Stage
 	job.Progress = st.Progress
-	if st.Error != nil {
+	if st.Error != nil && strings.TrimSpace(*st.Error) != "" && !strings.Contains(job.ModelMessage, strings.TrimSpace(*st.Error)) {
 		if strings.TrimSpace(job.ModelMessage) == "" {
 			job.ModelMessage = *st.Error
 		} else {
@@ -1112,6 +1136,13 @@ func FetchAndStoreVideoJobResult(c *fiber.Ctx) error {
 			return c.Status(404).JSON(fiber.Map{"error": "job not found"})
 		}
 		return c.Status(500).JSON(fiber.Map{"error": "failed to fetch job", "detail": err.Error()})
+	}
+
+	// Completed artifacts already copied to R2 must remain available even if
+	// the model worker has stopped or its temporary files have been removed.
+	if job.ResultJSON != "" && strings.HasPrefix(job.AnnotatedVideoPath, "https://") && json.Valid([]byte(job.ResultJSON)) {
+		c.Set("Content-Type", "application/json")
+		return c.SendString(job.ResultJSON)
 	}
 
 	resultTpl := strings.TrimSpace(os.Getenv("MODEL_SERVER_RESULT_URL")) // e.g. http://ml:8000/api/jobs/:job_id/result
@@ -1164,6 +1195,17 @@ func FetchAndStoreVideoJobResult(c *fiber.Ctx) error {
 		} else {
 			job.AnnotatedVideoPath = r2URL
 			setResultString(result, "annotated_video", r2URL)
+		}
+	}
+	if values, ok := result.(map[string]any); ok {
+		if trace, ok := values["tracking_trace"].(string); ok && trace != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			_, traceURL, uploadErr := uploadModelArtifactToR2(ctx, matchID, jobID, "tracking_trace")
+			cancel()
+			if uploadErr != nil {
+				return c.Status(502).JSON(fiber.Map{"error": "failed to save tracking trace to Cloudflare R2", "detail": uploadErr.Error()})
+			}
+			setResultString(result, "tracking_trace", traceURL)
 		}
 	}
 	job.ResultJSON = compactJSON(mustMarshalJSON(result))
@@ -1224,6 +1266,14 @@ func DownloadVideoJobArtifact(c *fiber.Ctx) error {
 
 	if artifactType == "annotated_video" && strings.TrimSpace(job.AnnotatedVideoPath) != "" {
 		return c.Redirect(job.AnnotatedVideoPath, fiber.StatusTemporaryRedirect)
+	}
+	if artifactType == "tracking_trace" {
+		var saved map[string]any
+		if json.Unmarshal([]byte(job.ResultJSON), &saved) == nil {
+			if traceURL, ok := saved["tracking_trace"].(string); ok && strings.HasPrefix(traceURL, "https://") {
+				return c.Redirect(traceURL, fiber.StatusTemporaryRedirect)
+			}
+		}
 	}
 
 	artifactURL, err := modelArtifactURL(artifactType, jobID)
