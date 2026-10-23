@@ -34,11 +34,12 @@ type ExcludedVideoSegment struct {
 	Reason string  `json:"reason"`
 }
 type TrackingReviewDocument struct {
-	Lineup           []uint                     `json:"lineup"`
-	TeamClubs        map[string]uint            `json:"team_clubs"`
-	Tracks           map[string]TrackCorrection `json:"tracks"`
-	Events           map[string]EventCorrection `json:"events"`
-	ExcludedSegments []ExcludedVideoSegment     `json:"excluded_segments"`
+	SuggestionDecisions map[string]string          `json:"suggestion_decisions"`
+	Lineup              []uint                     `json:"lineup"`
+	TeamClubs           map[string]uint            `json:"team_clubs"`
+	Tracks              map[string]TrackCorrection `json:"tracks"`
+	Events              map[string]EventCorrection `json:"events"`
+	ExcludedSegments    []ExcludedVideoSegment     `json:"excluded_segments"`
 }
 
 func emptyTrackingReview() TrackingReviewDocument {
@@ -253,6 +254,30 @@ func GetVideoAnalysisReview(c *fiber.Ctx) error {
 			}
 		}
 	}
+	// Filter only the review response; persisted AI results stay untouched.
+	if stats, ok := result["stats"].(map[string]any); ok {
+		if suggestions, ok := stats["track_merge_suggestions"].([]any); ok {
+			pending := []any{}
+			for _, value := range suggestions {
+				item, ok := value.(map[string]any)
+				if !ok {
+					continue
+				}
+				a, aok := item["from_track"].(float64)
+				b, bok := item["to_track"].(float64)
+				if !aok || !bok {
+					continue
+				}
+				from, to := strconv.Itoa(int(a)), strconv.Itoa(int(b))
+				first, _ := canonicalTrack(from, doc.Tracks)
+				last, _ := canonicalTrack(to, doc.Tracks)
+				if doc.SuggestionDecisions[from+":"+to] == "" && first != last {
+					pending = append(pending, value)
+				}
+			}
+			stats["track_merge_suggestions"] = pending
+		}
+	}
 	roster := []fiber.Map{}
 	for _, p := range players {
 		roster = append(roster, fiber.Map{"id": p.ID, "name": p.Name, "club_id": p.ClubID, "club_name": p.Club.Name, "jersey_number": p.JerseyNumber, "position": p.Position})
@@ -269,7 +294,7 @@ func SaveVideoAnalysisReview(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	_, roles, events, err := trackingSource(job.ResultJSON)
+	result, roles, events, err := trackingSource(job.ResultJSON)
 	if err != nil {
 		return fiber.NewError(409, err.Error())
 	}
@@ -291,6 +316,9 @@ func SaveVideoAnalysisReview(c *fiber.Ctx) error {
 	for _, p := range players {
 		roster[p.ID] = p
 	}
+	if err := applySuggestionDecisions(&request.Document, result); err != nil {
+		return fiber.NewError(400, err.Error())
+	}
 	if err := validateTrackingReview(&request.Document, roles, len(events), roster, match.HomeClubID, match.AwayClubID); err != nil {
 		return fiber.NewError(400, err.Error())
 	}
@@ -308,6 +336,17 @@ func SaveVideoAnalysisReview(c *fiber.Ctx) error {
 		}
 		if saved.Version != request.Version {
 			return fiber.NewError(409, "This review changed in another session. Reload before saving.")
+		}
+		var previous TrackingReviewDocument
+		if saved.Version > 0 {
+			if err := json.Unmarshal([]byte(saved.Document), &previous); err != nil {
+				return err
+			}
+			if err := preserveRejectedSuggestions(&request.Document, previous); err != nil {
+				return fiber.NewError(400, err.Error())
+			}
+
+			raw, _ = json.Marshal(request.Document)
 		}
 		saved = models.VideoAnalysisReview{JobID: job.JobID, MatchID: job.MatchID, Version: saved.Version + 1, Document: string(raw), UpdatedBy: user.ID, UpdatedAt: time.Now().UTC()}
 		if err := tx.Save(&saved).Error; err != nil {
@@ -406,5 +445,72 @@ func ExportVideoAnalysisReview(c *fiber.Ctx) error {
 	}
 	stats, _ := result["stats"].(map[string]any)
 	source, _ := stats["tracking_source"].(map[string]any)
-	return c.JSON(fiber.Map{"schema_version": 1, "match_id": job.MatchID, "video_id": job.VideoID, "job_id": job.JobID, "review_version": saved.Version, "reviewed_by": saved.UpdatedBy, "reviewed_at": saved.UpdatedAt, "lineup": doc.Lineup, "roster": roster, "source_video_sha256": source["sha256"], "track_identities": doc.Tracks, "team_clubs": doc.TeamClubs, "excluded_segments": doc.ExcludedSegments, "examples": examples})
+	return c.JSON(fiber.Map{"schema_version": 1, "match_id": job.MatchID, "video_id": job.VideoID, "job_id": job.JobID, "review_version": saved.Version, "reviewed_by": saved.UpdatedBy, "reviewed_at": saved.UpdatedAt, "lineup": doc.Lineup, "roster": roster, "source_video_sha256": source["sha256"], "track_identities": doc.Tracks, "suggestion_decisions": doc.SuggestionDecisions, "team_clubs": doc.TeamClubs, "excluded_segments": doc.ExcludedSegments, "examples": examples})
+}
+
+// Accepted suggestions use exactly the canonical mapping validated for manual merges.
+func applySuggestionDecisions(doc *TrackingReviewDocument, result map[string]any) error {
+	stats, _ := result["stats"].(map[string]any)
+	suggestions, _ := stats["track_merge_suggestions"].([]any)
+	pairs := map[string][2]string{}
+	for _, value := range suggestions {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		from, a := item["from_track"].(float64)
+		to, b := item["to_track"].(float64)
+		if a && b {
+			x, y := strconv.Itoa(int(from)), strconv.Itoa(int(to))
+			pairs[x+":"+y] = [2]string{x, y}
+		}
+	}
+	if doc.Tracks == nil {
+		doc.Tracks = map[string]TrackCorrection{}
+	}
+	// Sorting makes batch decisions deterministic.
+	keys := []string{}
+	for key := range doc.SuggestionDecisions {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		decision := doc.SuggestionDecisions[key]
+		pair, ok := pairs[key]
+		if !ok || (decision != "accepted" && decision != "rejected") {
+			return fmt.Errorf("invalid suggestion decision %s", key)
+		}
+		if decision == "accepted" {
+			from, err := canonicalTrack(pair[0], doc.Tracks)
+			if err != nil {
+				return err
+			}
+			to, err := canonicalTrack(pair[1], doc.Tracks)
+			if err != nil {
+				return err
+			}
+			if from != to {
+				identity := doc.Tracks[to]
+				identity.CanonicalID = from
+				doc.Tracks[to] = identity
+			}
+		}
+	}
+	return nil
+}
+
+func preserveRejectedSuggestions(doc *TrackingReviewDocument, previous TrackingReviewDocument) error {
+	if doc.SuggestionDecisions == nil {
+		doc.SuggestionDecisions = map[string]string{}
+	}
+	for pair, decision := range previous.SuggestionDecisions {
+		if decision != "rejected" {
+			continue
+		}
+		if doc.SuggestionDecisions[pair] == "accepted" {
+			return fmt.Errorf("this suggestion was already rejected")
+		}
+		doc.SuggestionDecisions[pair] = decision
+	}
+	return nil
 }

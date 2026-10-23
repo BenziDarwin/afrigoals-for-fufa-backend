@@ -6,3 +6,9 @@ uploads/
 .gocache/
 .codex-go-build-cache/
 .cache/go-build/
+
+.cache/go-tmp/
+
+.cache/review-pr/
+
+.cache/scout-runtime/

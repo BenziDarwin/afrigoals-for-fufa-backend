@@ -17,7 +17,8 @@ func (j JSONB) Value() (driver.Value, error) {
 	if j == nil {
 		return nil, nil
 	}
-	return json.Marshal(j)
+	data, err := json.Marshal(j)
+	return string(data), err
 }
 
 // Scan implements sql.Scanner interface

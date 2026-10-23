@@ -11,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/logger"
 
 	"afrigoals.com/middleware"
+	"afrigoals.com/models"
 	"afrigoals.com/services"
 )
 
@@ -138,6 +139,7 @@ func SetupRoutes(app *fiber.App) {
 	// CLUB ROUTES
 	// ========================================
 	clubs := api.Group("/clubs")
+	clubs.Get("/:club_id/player-analysis", services.GetClubPlayerAnalysis)
 	{
 		clubs.Get("", getCache, services.ListClubs)
 		clubs.Get("/:id", getCache, services.GetClubByID)
@@ -167,9 +169,20 @@ func SetupRoutes(app *fiber.App) {
 	// ========================================
 	// PLAYER ROUTES
 	// ========================================
+	api.Post("/scout-cv-requests", services.RequestScoutCV)
+	api.Get("/scout-cv-requests", services.ListScoutCVRequests)
+	api.Post("/scout-cv-requests/:id/respond", services.RespondScoutCVRequest)
+	api.Post("/scout-cv-deliveries", services.SendScoutCV)
+	scout := api.Group("/scout", middleware.RoleMiddleware(models.Scout, models.AfrigoalsAdmin))
+	scout.Get("/received-cvs", services.ScoutCVInbox)
+	scout.Get("/players", services.SearchScoutPlayers)
+	scout.Get("/trial", services.ScoutTrialStatus)
+	scout.Post("/ai-assistant", services.AskScoutAssistant)
+
 	players := api.Group("/players")
 	{
 		players.Get("", getCache, services.ListPlayers)
+		players.Get("/:id/profile-analysis", services.GetPlayerProfileAnalysis)
 		players.Get("/:id", getCache, services.GetPlayerByID)
 		players.Get("/uuid/:uuid", getCache, services.GetPlayerByUUID)
 		players.Get("/club/:club_id", getCache, services.GetPlayersByClub)
@@ -438,6 +451,12 @@ func SetupRoutes(app *fiber.App) {
 
 			// NEW: fetch result from model server, optionally store in DB + link video
 			analystMatchesWrite.Get("/video-jobs/:job_id/result", services.FetchAndStoreVideoJobResult)
+			analystMatchesWrite.Get("/video-jobs/:job_id/tracks/:track_id/thumbnail", services.ProxyVideoReviewArtifact)
+			analystMatchesWrite.Post("/video-jobs/:job_id/reviewed-stats", services.ProxyVideoReviewArtifact)
+			analystMatchesWrite.Get("/video-jobs/:job_id/jersey", services.ProxyVideoReviewArtifact)
+			analystMatchesWrite.Post("/video-jobs/:job_id/jersey", services.ProxyVideoReviewArtifact)
+			analystMatchesWrite.Put("/video-jobs/:job_id/jersey", services.ProxyVideoReviewArtifact)
+			analystMatchesWrite.Get("/video-jobs/:job_id/jersey/crop", services.ProxyVideoReviewArtifact)
 			analystMatchesWrite.Get("/video-jobs/:job_id/review", services.GetVideoAnalysisReview)
 			analystMatchesWrite.Put("/video-jobs/:job_id/review", services.SaveVideoAnalysisReview)
 			analystMatchesWrite.Get("/video-jobs/:job_id/review/export", services.ExportVideoAnalysisReview)

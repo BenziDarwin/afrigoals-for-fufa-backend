@@ -14,13 +14,14 @@ const (
 	LeagueAdmin    UserRole = "league"
 	ClubManager    UserRole = "club_manager"
 	DataAnalyst    UserRole = "data_analyst"
+	Scout          UserRole = "scout"
 )
 
 // SelfRegisterableRoles are the roles the public may choose at registration.
 // AfrigoalsAdmin is deliberately excluded: platform administrators are seeded
 // by InitDB or created by another administrator, never self-assigned.
 func SelfRegisterableRoles() []UserRole {
-	return []UserRole{LeagueAdmin, ClubManager, DataAnalyst}
+	return []UserRole{LeagueAdmin, ClubManager, DataAnalyst, Scout}
 }
 
 // IsSelfRegisterable reports whether r may be chosen at registration.
@@ -37,7 +38,7 @@ func IsSelfRegisterable(r UserRole) bool {
 // Use this on administrator-only paths such as CreateUser.
 func IsValidRole(r UserRole) bool {
 	switch r {
-	case AfrigoalsAdmin, LeagueAdmin, ClubManager, DataAnalyst:
+	case AfrigoalsAdmin, LeagueAdmin, ClubManager, DataAnalyst, Scout:
 		return true
 	default:
 		return false

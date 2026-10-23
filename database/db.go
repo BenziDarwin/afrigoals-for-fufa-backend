@@ -46,7 +46,10 @@ func ConnectDB() *gorm.DB {
 	err = DB.AutoMigrate(
 		// Base tables
 		&models.League{}, // no FK
-		&models.User{},   // FK to League or Club
+		&models.User{},
+		&models.ScoutCVRequest{},
+		&models.ScoutCVDelivery{},
+		&models.ScoutAIInsight{}, // FK to League or Club
 
 		// Football domain
 		&models.Club{},              // FK to League

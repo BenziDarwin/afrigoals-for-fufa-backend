@@ -16,7 +16,8 @@ func (s StringSlice) Value() (driver.Value, error) {
 	if s == nil {
 		return "[]", nil
 	}
-	return json.Marshal(s)
+	data, err := json.Marshal(s)
+	return string(data), err
 }
 
 func (s *StringSlice) Scan(value interface{}) error {
@@ -42,7 +43,8 @@ func (s UintSlice) Value() (driver.Value, error) {
 	if s == nil {
 		return "[]", nil
 	}
-	return json.Marshal(s)
+	data, err := json.Marshal(s)
+	return string(data), err
 }
 
 func (s *UintSlice) Scan(value interface{}) error {
