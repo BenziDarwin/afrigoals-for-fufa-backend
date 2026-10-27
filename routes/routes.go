@@ -86,6 +86,8 @@ func SetupRoutes(app *fiber.App) {
 	// ========================================
 	// USER ROUTES
 	// ========================================
+	api.Get("/articles", middleware.AdminOnly(), services.ListArticles)
+
 	users := api.Group("/users")
 	{
 		users.Get("/:id", services.GetUserByID)
