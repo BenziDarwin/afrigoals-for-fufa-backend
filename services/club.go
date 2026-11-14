@@ -3,7 +3,7 @@ package services
 import (
 	"errors"
 	"strconv"
-	"time"
+	"strings"
 
 	"afrigoals.com/database"
 	"afrigoals.com/models"
@@ -23,7 +23,7 @@ func GetClubByID(c *fiber.Ctx) error {
 	}
 
 	var club models.Club
-	if err := database.DB.Preload("Leagues").Preload("Players").First(&club, clubID).Error; err != nil {
+	if err := database.DB.Preload("Leagues").Preload("Players").Preload("Players.Club").Preload("Players.NationalTeam").First(&club, clubID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "Club not found",
@@ -34,13 +34,18 @@ func GetClubByID(c *fiber.Ctx) error {
 		})
 	}
 
+	if err := loadNationalRoster(database.DB, &club); err != nil {
+		return fiber.NewError(500, "Could not load squad")
+	}
 	return c.JSON(fiber.Map{
 		"club": fiber.Map{
-			"id":      club.ID,
-			"uuid":    club.UUID,
-			"name":    club.Name,
-			"leagues": club.Leagues,
-			"players": club.Players,
+			"id":        club.ID,
+			"uuid":      club.UUID,
+			"name":      club.Name,
+			"team_type": club.TeamType,
+			"country":   club.Country,
+			"leagues":   club.Leagues,
+			"players":   club.Players,
 		},
 	})
 }
@@ -50,7 +55,7 @@ func GetClubByUUID(c *fiber.Ctx) error {
 	uuid := c.Params("uuid")
 
 	var club models.Club
-	if err := database.DB.Preload("Leagues").Preload("Players").Where("uuid = ?", uuid).First(&club).Error; err != nil {
+	if err := database.DB.Preload("Leagues").Preload("Players").Preload("Players.Club").Preload("Players.NationalTeam").Where("uuid = ?", uuid).First(&club).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "Club not found",
@@ -61,13 +66,18 @@ func GetClubByUUID(c *fiber.Ctx) error {
 		})
 	}
 
+	if err := loadNationalRoster(database.DB, &club); err != nil {
+		return fiber.NewError(500, "Could not load squad")
+	}
 	return c.JSON(fiber.Map{
 		"club": fiber.Map{
-			"id":      club.ID,
-			"uuid":    club.UUID,
-			"name":    club.Name,
-			"leagues": club.Leagues,
-			"players": club.Players,
+			"id":        club.ID,
+			"uuid":      club.UUID,
+			"name":      club.Name,
+			"team_type": club.TeamType,
+			"country":   club.Country,
+			"leagues":   club.Leagues,
+			"players":   club.Players,
 		},
 	})
 }
@@ -110,7 +120,7 @@ func ListClubs(c *fiber.Ctx) error {
 
 	// Get paginated results
 	var clubs []models.Club
-	if err := query.Preload("Leagues").Preload("Players").
+	if err := query.Preload("Leagues").Preload("Players").Preload("Players.Club").Preload("Players.NationalTeam").
 		Limit(perPage).Offset(offset).
 		Order("created_at DESC").
 		Find(&clubs).Error; err != nil {
@@ -122,10 +132,15 @@ func ListClubs(c *fiber.Ctx) error {
 	// Convert to response format
 	clubList := make([]fiber.Map, len(clubs))
 	for i, club := range clubs {
+		if err := loadNationalRoster(database.DB, &club); err != nil {
+			return fiber.NewError(500, "Could not load squad")
+		}
 		clubList[i] = fiber.Map{
 			"id":           club.ID,
 			"uuid":         club.UUID,
 			"name":         club.Name,
+			"team_type":    club.TeamType,
+			"country":      club.Country,
 			"league_count": len(club.Leagues),
 			"player_count": len(club.Players),
 			"created_at":   club.CreatedAt,
@@ -151,6 +166,8 @@ func ListClubs(c *fiber.Ctx) error {
 func CreateClub(c *fiber.Ctx) error {
 	var req struct {
 		Name      string `json:"name"`
+		TeamType  string `json:"team_type"`
+		Country   string `json:"country"`
 		LeagueIDs []uint `json:"league_ids"` // Array of league IDs
 	}
 
@@ -167,6 +184,15 @@ func CreateClub(c *fiber.Ctx) error {
 		})
 	}
 
+	if req.TeamType == "" {
+		req.TeamType = "club"
+	}
+	if req.TeamType != "club" && req.TeamType != "national" {
+		return fiber.NewError(400, "Choose club or national team")
+	}
+	if req.TeamType == "national" && strings.TrimSpace(req.Country) == "" {
+		return fiber.NewError(400, "Country is required for a national team")
+	}
 	// Check if club with same name already exists
 	var existingClub models.Club
 	if err := database.DB.Where("name = ?", req.Name).First(&existingClub).Error; err == nil {
@@ -177,7 +203,8 @@ func CreateClub(c *fiber.Ctx) error {
 
 	// Create club
 	club := models.Club{
-		Name: req.Name,
+		Name:     req.Name,
+		TeamType: req.TeamType, Country: strings.TrimSpace(req.Country),
 	}
 
 	if err := database.DB.Create(&club).Error; err != nil {
@@ -212,12 +239,15 @@ func CreateClub(c *fiber.Ctx) error {
 	database.DB.Preload("Leagues").First(&club, club.ID)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"message": "Club created successfully",
+		"success": true,
+		"message": "Team created successfully",
 		"club": fiber.Map{
-			"id":      club.ID,
-			"uuid":    club.UUID,
-			"name":    club.Name,
-			"leagues": club.Leagues,
+			"id":        club.ID,
+			"uuid":      club.UUID,
+			"name":      club.Name,
+			"team_type": club.TeamType,
+			"country":   club.Country,
+			"leagues":   club.Leagues,
 		},
 	})
 }
@@ -234,7 +264,9 @@ func UpdateClub(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Name *string `json:"name,omitempty"`
+		Name     *string `json:"name,omitempty"`
+		TeamType *string `json:"team_type,omitempty"`
+		Country  *string `json:"country,omitempty"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -270,9 +302,39 @@ func UpdateClub(c *fiber.Ctx) error {
 		updates["name"] = *req.Name
 	}
 
+	if req.Country != nil {
+		updates["country"] = strings.TrimSpace(*req.Country)
+	}
+	if req.TeamType != nil {
+		if *req.TeamType != "club" && *req.TeamType != "national" {
+			return fiber.NewError(400, "Choose club or national team")
+		}
+		country := club.Country
+		if req.Country != nil {
+			country = *req.Country
+		}
+		if *req.TeamType == "national" && strings.TrimSpace(country) == "" {
+			return fiber.NewError(400, "Country is required for a national team")
+		}
+		if club.TeamType == "national" && *req.TeamType == "club" {
+			var count int64
+			database.DB.Model(&models.Player{}).Where("national_team_id = ?", club.ID).Count(&count)
+			if count > 0 {
+				return fiber.NewError(409, "Remove national registrations before converting this team to a club")
+			}
+		}
+		updates["team_type"] = *req.TeamType
+	}
 	// Perform update if there are changes
 	if len(updates) > 0 {
-		if err := database.DB.Model(&club).Updates(updates).Error; err != nil {
+		if err := database.DB.Transaction(func(tx *gorm.DB) error {
+			if req.TeamType != nil && *req.TeamType == "national" && club.TeamType != "national" {
+				if err := tx.Model(&models.Player{}).Where("club_id = ?", club.ID).Updates(map[string]interface{}{"national_team_id": club.ID, "national_jersey_number": gorm.Expr("jersey_number"), "club_id": nil, "jersey_number": 0}).Error; err != nil {
+					return err
+				}
+			}
+			return tx.Model(&club).Updates(updates).Error
+		}); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": "Failed to update club",
 			})
@@ -285,10 +347,12 @@ func UpdateClub(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"message": "Club updated successfully",
 		"club": fiber.Map{
-			"id":      club.ID,
-			"uuid":    club.UUID,
-			"name":    club.Name,
-			"leagues": club.Leagues,
+			"id":        club.ID,
+			"uuid":      club.UUID,
+			"name":      club.Name,
+			"team_type": club.TeamType,
+			"country":   club.Country,
+			"leagues":   club.Leagues,
 		},
 	})
 }
@@ -345,6 +409,8 @@ func GetClubsByLeague(c *fiber.Ctx) error {
 			"id":           club.ID,
 			"uuid":         club.UUID,
 			"name":         club.Name,
+			"team_type":    club.TeamType,
+			"country":      club.Country,
 			"player_count": len(club.Players),
 			"created_at":   club.CreatedAt,
 		}
@@ -357,166 +423,7 @@ func GetClubsByLeague(c *fiber.Ctx) error {
 }
 
 func CreateAndAssignPlayerToClub(c *fiber.Ctx) error {
-	// Get authenticated user from context
-	user, ok := c.Locals("user").(models.User)
-	if !ok {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"success": false,
-			"error":   "Unauthorized",
-		})
-	}
-
-	// ✅ FIXED: Use snake_case JSON tags to match frontend and REST conventions
-	var req struct {
-		ClubID       uint   `json:"club_id"`
-		Name         string `json:"name"`
-		JerseyNumber int    `json:"jersey_number"`
-		Position     string `json:"position"`
-		PhotoURL     string `json:"photo_url"`
-		DateOfBirth  string `json:"date_of_birth"`
-		Nationality  string `json:"nationality"`
-	}
-
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false,
-			"error":   "Invalid request body",
-			"details": err.Error(),
-		})
-	}
-
-	// Validate required fields
-	if req.ClubID == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false,
-			"error":   "Club ID is required",
-		})
-	}
-
-	if req.Name == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false,
-			"error":   "Player name is required",
-		})
-	}
-
-	if req.Position == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false,
-			"error":   "Position is required",
-		})
-	}
-
-	if req.DateOfBirth == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false,
-			"error":   "Date of birth is required",
-		})
-	}
-
-	if req.Nationality == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false,
-			"error":   "Nationality is required",
-		})
-	}
-
-	// ✅ CRITICAL: If user is club_manager, they can ONLY add players to their own club
-	if user.Role == models.ClubManager {
-		if user.ClubID == nil {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"success": false,
-				"error":   "Your account is not associated with any club",
-			})
-		}
-		if *user.ClubID != req.ClubID {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"success": false,
-				"error":   "You can only add players to your own club",
-			})
-		}
-	}
-
-	// Verify club exists
-	var club models.Club
-	if err := database.DB.First(&club, req.ClubID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-				"success": false,
-				"error":   "Club not found",
-			})
-		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"success": false,
-			"error":   "Database error",
-		})
-	}
-
-	// Parse date of birth
-	dob, err := time.Parse("2006-01-02", req.DateOfBirth)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"success": false,
-			"error":   "Invalid date format. Use YYYY-MM-DD",
-			"details": err.Error(),
-		})
-	}
-
-	// One shirt number per club. Checked here so the caller gets a clear
-	// message rather than a raw unique-constraint error from Postgres.
-	if err := ensureJerseyFree(req.ClubID, req.JerseyNumber, 0); err != nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
-			"success": false,
-			"error":   err.Error(),
-		})
-	}
-
-	// Create player with club assignment
-	var photoURL *string
-	if req.PhotoURL != "" {
-		photoURL = &req.PhotoURL
-	}
-
-	player := models.Player{
-		ClubID:       req.ClubID,
-		Name:         req.Name,
-		JerseyNumber: req.JerseyNumber,
-		Position:     req.Position,
-		PhotoURL:     photoURL,
-		DateOfBirth:  dob,
-		Nationality:  req.Nationality,
-	}
-
-	if err := database.DB.Create(&player).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"success": false,
-			"error":   "Failed to create player",
-			"details": err.Error(),
-		})
-	}
-
-	// Load relationships for response
-	database.DB.Preload("Club").First(&player, player.ID)
-
-	// ✅ Return response matching frontend expectations (snake_case)
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"success": true,
-		"message": "Player created and assigned to club successfully",
-		"data": fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"photo_url":     player.PhotoURL,
-			"date_of_birth": player.DateOfBirth.Format("2006-01-02"),
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"club":          club,
-			"created_at":    player.CreatedAt,
-			"updated_at":    player.UpdatedAt,
-		},
-	})
+	return createSquadPlayer(c)
 }
 
 // GetClubLeagues retrieves all leagues for a specific club
@@ -558,27 +465,34 @@ func GetClubPlayers(c *fiber.Ctx) error {
 	clubID := c.Params("club_id")
 
 	var players []models.Player
-	if err := database.DB.Preload("Stats").Where("club_id = ?", clubID).Find(&players).Error; err != nil {
+	if err := teamPlayers(database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats"), clubID).Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get club players",
 		})
 	}
 
+	teamID, _ := strconv.ParseUint(clubID, 10, 32)
+	projectSquad(players, uint(teamID))
 	playerList := make([]fiber.Map, len(players))
 	for i, player := range players {
 		playerList[i] = fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"photo_url":     player.PhotoURL,
-			"date_of_birth": player.DateOfBirth,
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"stats":         player.Stats,
-			"created_at":    player.CreatedAt,
-			"updated_at":    player.UpdatedAt,
+			"id":                     player.ID,
+			"uuid":                   player.UUID,
+			"name":                   player.Name,
+			"jersey_number":          player.JerseyNumber,
+			"position":               player.Position,
+			"photo_url":              player.PhotoURL,
+			"date_of_birth":          player.DateOfBirth,
+			"nationality":            player.Nationality,
+			"club_id":                player.ClubID,
+			"club":                   player.Club,
+			"club_jersey_number":     player.ClubJerseyNumber,
+			"national_team_id":       player.NationalTeamID,
+			"national_team":          player.NationalTeam,
+			"national_jersey_number": player.NationalJerseyNumber,
+			"stats":                  player.Stats,
+			"created_at":             player.CreatedAt,
+			"updated_at":             player.UpdatedAt,
 		}
 	}
 
@@ -634,6 +548,9 @@ func AssignPlayerToClub(c *fiber.Ctx) error {
 		})
 	}
 
+	if nationalTeam(club) {
+		return fiber.NewError(400, "Use the national team registration endpoint to select this player")
+	}
 	// Update player's club
 	if err := database.DB.Model(&player).Update("club_id", req.ClubID).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
@@ -699,7 +616,7 @@ func GetClubStatistics(c *fiber.Ctx) error {
 	clubID := c.Params("club_id")
 
 	var club models.Club
-	if err := database.DB.Preload("Players").Preload("Leagues").First(&club, clubID).Error; err != nil {
+	if err := database.DB.Preload("Players").Preload("Players.Club").Preload("Players.NationalTeam").Preload("Leagues").First(&club, clubID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "Club not found",
@@ -710,6 +627,9 @@ func GetClubStatistics(c *fiber.Ctx) error {
 		})
 	}
 
+	if err := loadNationalRoster(database.DB, &club); err != nil {
+		return fiber.NewError(500, "Could not load squad")
+	}
 	return c.JSON(fiber.Map{
 		"club_id":      club.ID,
 		"club_name":    club.Name,

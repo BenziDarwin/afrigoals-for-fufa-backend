@@ -212,7 +212,8 @@ func reviewRoster(matchID uint) (models.Match, []models.Player, error) {
 		return match, nil, err
 	}
 	var players []models.Player
-	err := database.DB.Preload("Club").Where("club_id IN ?", []uint{match.HomeClubID, match.AwayClubID}).Order("club_id, jersey_number, name").Find(&players).Error
+	err := database.DB.Preload("Club").Preload("NationalTeam").Where("(club_id IN ? OR national_team_id IN ?)", []uint{match.HomeClubID, match.AwayClubID}, []uint{match.HomeClubID, match.AwayClubID}).Order("club_id, jersey_number, name").Find(&players).Error
+	projectMatchSquad(players, match)
 	return match, players, err
 }
 

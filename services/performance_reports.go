@@ -36,7 +36,7 @@ func loadMatchPerformanceInputs(ctx context.Context, matchID uint) (*matchPerfor
 
 	var players []models.Player
 	if err := database.DB.
-		Where("club_id IN ?", []uint{match.HomeClubID, match.AwayClubID}).
+		Where("(club_id IN ? OR national_team_id IN ?)", []uint{match.HomeClubID, match.AwayClubID}, []uint{match.HomeClubID, match.AwayClubID}).
 		Find(&players).Error; err != nil {
 		return nil, err
 	}
@@ -75,6 +75,7 @@ func loadMatchPerformanceInputs(ctx context.Context, matchID uint) (*matchPerfor
 		}
 	}
 
+	projectMatchSquad(players, match)
 	return &matchPerformanceInputs{
 		Match:             match,
 		Players:           players,

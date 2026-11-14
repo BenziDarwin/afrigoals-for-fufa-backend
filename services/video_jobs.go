@@ -2,9 +2,9 @@
 package services
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -427,26 +427,30 @@ func copyStoredVideoToTemp(videoURL string, outputPath string) error {
 	}
 
 	if strings.HasPrefix(videoURL, "http://") || strings.HasPrefix(videoURL, "https://") {
-		resp, err := http.Get(videoURL)
-		if err != nil {
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return fmt.Errorf("video download returned HTTP %d", resp.StatusCode)
-		}
-
-		dst, err := os.Create(outputPath)
-		if err != nil {
-			return err
-		}
-		defer dst.Close()
-
-		_, err = io.Copy(dst, resp.Body)
+		// Streams to disk with timeouts, resume and retry. See video_source_download.go.
+		_, err := downloadSourceVideo(context.Background(), videoURL, outputPath)
 		return err
 	}
 
 	return fmt.Errorf("unsupported video URL: %s", videoURL)
+}
+
+// sourceVideoErrorResponse maps a source retrieval failure to a specific,
+// analyst-facing message. Unknown causes keep the generic message.
+func sourceVideoErrorResponse(c *fiber.Ctx, err error) error {
+	var srcErr *VideoSourceError
+	if errors.As(err, &srcErr) {
+		status := fiber.StatusBadGateway
+		if srcErr.Code == videoSourceCodeInsufficientStorage {
+			status = fiber.StatusInsufficientStorage
+		}
+		return c.Status(status).JSON(fiber.Map{
+			"error":  srcErr.Message,
+			"code":   srcErr.Code,
+			"detail": srcErr.Detail,
+		})
+	}
+	return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "failed to load selected video", "detail": err.Error()})
 }
 
 func burnVideoMaskRegions(inputPath string, outputPath string, regions []VideoMaskRegion) error {
@@ -498,7 +502,15 @@ func createVideoFormFile(writer *multipart.Writer, fieldName string, filename st
 	return writer.CreatePart(header)
 }
 
-func uploadLocalVideoToModel(matchID uint, userID uint, filename string, videoPath string) (ModelUploadResponse, int, []byte, error) {
+// modelUploadExtras carries optional commentary inputs for the model upload.
+type modelUploadExtras struct {
+	CommentaryAudioPath string // mp3 attached as commentary_audio when set
+	CommentaryError     string // reason commentary extraction failed, forwarded as commentary_error
+}
+
+// uploadLocalVideoToModel streams the video (and optional commentary audio) to the
+// model server through io.Pipe. The file is never loaded fully into memory.
+func uploadLocalVideoToModel(matchID uint, userID uint, filename string, videoPath string, extras modelUploadExtras) (ModelUploadResponse, int, []byte, error) {
 	modelURL := strings.TrimSpace(os.Getenv("MODEL_SERVER_UPLOAD_URL"))
 	if modelURL == "" {
 		return ModelUploadResponse{}, 500, nil, fmt.Errorf("MODEL_SERVER_UPLOAD_URL not set")
@@ -540,13 +552,35 @@ func uploadLocalVideoToModel(matchID uint, userID uint, filename string, videoPa
 		_ = writer.WriteField("requested_by_user_id", fmt.Sprintf("%d", userID))
 		_ = writer.WriteField("use_commentary", "true")
 
+		if extras.CommentaryError != "" {
+			_ = writer.WriteField("commentary_error", extras.CommentaryError)
+		}
+		if extras.CommentaryAudioPath != "" {
+			audioPart, err := writer.CreateFormFile("commentary_audio", "commentary.mp3")
+			if err != nil {
+				_ = pw.CloseWithError(fmt.Errorf("failed to create commentary multipart: %w", err))
+				return
+			}
+			audioFile, err := os.Open(extras.CommentaryAudioPath)
+			if err != nil {
+				_ = pw.CloseWithError(fmt.Errorf("failed to open commentary audio: %w", err))
+				return
+			}
+			defer audioFile.Close()
+			if _, err := io.Copy(audioPart, audioFile); err != nil {
+				_ = pw.CloseWithError(fmt.Errorf("failed to stream commentary audio: %w", err))
+				return
+			}
+			_ = writer.WriteField("commentary_audio_format", "mp3")
+		}
+
 		if err := writer.Close(); err != nil {
 			_ = pw.CloseWithError(fmt.Errorf("failed to finalize multipart: %w", err))
 			return
 		}
 	}()
 
-	client := &http.Client{Timeout: 20 * time.Minute}
+	client := &http.Client{Timeout: modelUploadTimeout()}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ModelUploadResponse{}, 502, nil, fmt.Errorf("model server upload failed: %w", err)
@@ -613,6 +647,14 @@ func UploadMatchVideoToModelsAndStoreJob(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to finalize temp video file"})
 	}
 
+	if _, err := validateStoredVideo(c.UserContext(), videoTmpPath, matchID, 0); err != nil {
+		return c.Status(422).JSON(fiber.Map{
+			"error":  errInvalidVideo.Error(),
+			"code":   "INVALID_VIDEO",
+			"detail": err.Error(),
+		})
+	}
+
 	modelVideoPath := videoTmpPath
 	if regions := parseVideoMaskRegions(c.FormValue("mask_regions")); len(regions) > 0 {
 		maskedTmp, err := os.CreateTemp("", "afrigoals-model-video-masked-*"+filepath.Ext(fileHeader.Filename))
@@ -638,26 +680,7 @@ func UploadMatchVideoToModelsAndStoreJob(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "MODEL_SERVER_UPLOAD_URL not set"})
 	}
 
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-
-	part, err := createVideoFormFile(writer, "file", fileHeader.Filename)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to create multipart"})
-	}
-	videoFile, err := os.Open(modelVideoPath)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to reopen upload for model forwarding"})
-	}
-	defer videoFile.Close()
-	if _, err := io.Copy(part, videoFile); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to stream file"})
-	}
-
-	_ = writer.WriteField("match_id", fmt.Sprintf("%d", matchID))
-	_ = writer.WriteField("requested_by_user_id", fmt.Sprintf("%d", userID))
-	_ = writer.WriteField("use_commentary", "true")
-
+	// Commentary is extracted from the unmasked upload before streaming starts.
 	audioTmp, err := os.CreateTemp("", "afrigoals-commentary-*.mp3")
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to create temp commentary file"})
@@ -666,56 +689,20 @@ func UploadMatchVideoToModelsAndStoreJob(c *fiber.Ctx) error {
 	_ = audioTmp.Close()
 	defer os.Remove(audioTmpPath)
 
+	extras := modelUploadExtras{}
 	if hasCommentary, err := extractCommentaryAudioIfPresent(videoTmpPath, audioTmpPath); err != nil {
-		_ = writer.WriteField("commentary_error", err.Error())
+		extras.CommentaryError = err.Error()
 	} else if hasCommentary {
-		audioPart, err := writer.CreateFormFile("commentary_audio", "commentary.mp3")
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "failed to create commentary multipart"})
-		}
-		audioFile, err := os.Open(audioTmpPath)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "failed to open commentary audio"})
-		}
-		defer audioFile.Close()
-		if _, err := io.Copy(audioPart, audioFile); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "failed to stream commentary audio"})
-		}
-		_ = writer.WriteField("commentary_audio_format", "mp3")
+		extras.CommentaryAudioPath = audioTmpPath
 	}
 
-	if err := writer.Close(); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to finalize multipart"})
-	}
-
-	req, err := http.NewRequest("POST", modelURL, &buf)
+	// Streams the video to the model server. The body is never buffered in RAM.
+	up, statusCode, body, err := uploadLocalVideoToModel(matchID, userID, fileHeader.Filename, modelVideoPath, extras)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "failed to create request"})
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	client := &http.Client{Timeout: 20 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
+		if len(body) > 0 {
+			return c.Status(502).JSON(fiber.Map{"error": err.Error(), "status": statusCode, "body": string(body)})
+		}
 		return c.Status(502).JSON(fiber.Map{"error": "model server upload failed", "detail": err.Error()})
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return c.Status(502).JSON(fiber.Map{
-			"error":  "model server returned non-2xx",
-			"status": resp.StatusCode,
-			"body":   string(body),
-		})
-	}
-
-	var up ModelUploadResponse
-	if err := json.Unmarshal(body, &up); err != nil {
-		return c.Status(502).JSON(fiber.Map{"error": "invalid model server response", "body": string(body)})
-	}
-	if strings.TrimSpace(up.JobID) == "" {
-		return c.Status(502).JSON(fiber.Map{"error": "model server did not return job_id", "body": string(body)})
 	}
 
 	// persist job immediately (match-scoped)
@@ -801,7 +788,15 @@ func AnalyzeStoredMatchVideoWithModels(c *fiber.Ctx) error {
 
 	if err := copyStoredVideoToTemp(videoURL, videoTmpPath); err != nil {
 		log.Printf("analyze-with-models: failed to load selected video match_id=%d video_id=%d url=%q err=%v", matchID, video.ID, videoURL, err)
-		return c.Status(502).JSON(fiber.Map{"error": "failed to load selected video", "detail": err.Error()})
+		return sourceVideoErrorResponse(c, err)
+	}
+
+	if _, err := validateStoredVideo(c.UserContext(), videoTmpPath, matchID, video.ID); err != nil {
+		return c.Status(422).JSON(fiber.Map{
+			"error":  errInvalidVideo.Error(),
+			"code":   "INVALID_VIDEO",
+			"detail": err.Error(),
+		})
 	}
 
 	modelVideoPath := videoTmpPath
@@ -824,7 +819,7 @@ func AnalyzeStoredMatchVideoWithModels(c *fiber.Ctx) error {
 		modelVideoPath = maskedTmpPath
 	}
 
-	up, statusCode, body, err := uploadLocalVideoToModel(matchID, userID, filename, modelVideoPath)
+	up, statusCode, body, err := uploadLocalVideoToModel(matchID, userID, filename, modelVideoPath, modelUploadExtras{})
 	if err != nil {
 		log.Printf(
 			"analyze-with-models: model upload failed match_id=%d video_id=%d model_url=%q status=%d err=%v body=%s",
@@ -1022,6 +1017,17 @@ func CancelStoredVideoJob(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(job)
+}
+
+// Upper bound for forwarding a full match file to the model server. A 90-120
+// minute match can be several GB, so the default is generous. It is
+// configurable with MODEL_SERVER_UPLOAD_TIMEOUT_SECONDS.
+func modelUploadTimeout() time.Duration {
+	seconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("MODEL_SERVER_UPLOAD_TIMEOUT_SECONDS")))
+	if err != nil || seconds < 60 || seconds > 4*60*60 {
+		return 60 * time.Minute
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // Allow status polling to survive a Modal cold start without waiting indefinitely.

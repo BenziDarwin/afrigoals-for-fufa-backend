@@ -338,11 +338,6 @@ func CreateMatch(c *fiber.Ctx) error {
 	}
 
 	// Validate required fields
-	if req.LeagueID == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "league_id is required",
-		})
-	}
 	if req.HomeClubID == 0 || req.AwayClubID == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Home club ID and away club ID are required",
@@ -365,17 +360,13 @@ func CreateMatch(c *fiber.Ctx) error {
 		}
 	}
 
-	// Verify league exists
-	var league models.League
-	if err := database.DB.First(&league, req.LeagueID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-				"error": "League not found",
-			})
+	var leagueID *uint
+	if req.LeagueID > 0 {
+		var league models.League
+		if err := database.DB.First(&league, req.LeagueID).Error; err != nil {
+			return fiber.NewError(400, "League not found")
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Database error",
-		})
+		leagueID = &req.LeagueID
 	}
 
 	// Verify clubs exist
@@ -391,12 +382,13 @@ func CreateMatch(c *fiber.Ctx) error {
 		})
 	}
 
-	// Create match with league_id properly set
-	leagueID := req.LeagueID // Create a copy for the pointer
+	if leagueID == nil && (!nationalTeam(homeClub) || !nationalTeam(awayClub)) {
+		return fiber.NewError(400, "A league is required for club matches")
+	}
 	match := models.Match{
 		HomeClubID: req.HomeClubID,
 		AwayClubID: req.AwayClubID,
-		LeagueID:   &leagueID, // Use pointer to the copied value
+		LeagueID:   leagueID,
 		Date:       matchDate,
 		ScoreHome:  req.ScoreHome,
 		ScoreAway:  req.ScoreAway,

@@ -31,13 +31,14 @@ func GetMatchRosterPlayers(c *fiber.Ctx) error {
 
 	var players []models.Player
 	if err := database.DB.
-		Preload("Club").
-		Where("club_id IN ?", []uint{match.HomeClubID, match.AwayClubID}).
+		Preload("Club").Preload("NationalTeam").
+		Where("(club_id IN ? OR national_team_id IN ?)", []uint{match.HomeClubID, match.AwayClubID}, []uint{match.HomeClubID, match.AwayClubID}).
 		Order("club_id ASC, jersey_number ASC, name ASC").
 		Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list match roster players"})
 	}
 
+	projectMatchSquad(players, match)
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": fiber.Map{
@@ -320,8 +321,8 @@ func computeTeamPerformanceSummaries(matchID uint) (*teamPerformanceReportPayloa
 
 	var players []models.Player
 	if err := database.DB.
-		Preload("Club").
-		Where("club_id IN ?", []uint{match.HomeClubID, match.AwayClubID}).
+		Preload("Club").Preload("NationalTeam").
+		Where("(club_id IN ? OR national_team_id IN ?)", []uint{match.HomeClubID, match.AwayClubID}, []uint{match.HomeClubID, match.AwayClubID}).
 		Find(&players).Error; err != nil {
 		return nil, err
 	}
@@ -341,6 +342,7 @@ func computeTeamPerformanceSummaries(matchID uint) (*teamPerformanceReportPayloa
 		return nil, err
 	}
 
+	projectMatchSquad(players, match)
 	playerClub := make(map[uint]uint, len(players))
 	for _, p := range players {
 		playerClub[p.ID] = p.ClubID

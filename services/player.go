@@ -25,7 +25,7 @@ func GetPlayerByID(c *fiber.Ctx) error {
 	}
 
 	var player models.Player
-	if err := database.DB.Preload("Club").Preload("Stats").First(&player, playerID).Error; err != nil {
+	if err := database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats").First(&player, playerID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "Player not found",
@@ -38,17 +38,20 @@ func GetPlayerByID(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"player": fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"photo_url":     player.PhotoURL,
-			"date_of_birth": player.DateOfBirth,
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"club":          player.Club,
-			"stats":         player.Stats,
+			"id":                     player.ID,
+			"uuid":                   player.UUID,
+			"name":                   player.Name,
+			"jersey_number":          player.JerseyNumber,
+			"position":               player.Position,
+			"photo_url":              player.PhotoURL,
+			"date_of_birth":          player.DateOfBirth,
+			"nationality":            player.Nationality,
+			"club_id":                player.ClubID,
+			"national_team_id":       player.NationalTeamID,
+			"national_team":          player.NationalTeam,
+			"national_jersey_number": player.NationalJerseyNumber,
+			"club":                   player.Club,
+			"stats":                  player.Stats,
 		},
 	})
 }
@@ -58,7 +61,7 @@ func GetPlayerByUUID(c *fiber.Ctx) error {
 	uuid := c.Params("uuid")
 
 	var player models.Player
-	if err := database.DB.Preload("Club").Preload("Stats").Where("uuid = ?", uuid).First(&player).Error; err != nil {
+	if err := database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats").Where("uuid = ?", uuid).First(&player).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "Player not found",
@@ -71,17 +74,20 @@ func GetPlayerByUUID(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"player": fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"photo_url":     player.PhotoURL,
-			"date_of_birth": player.DateOfBirth,
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"club":          player.Club,
-			"stats":         player.Stats,
+			"id":                     player.ID,
+			"uuid":                   player.UUID,
+			"name":                   player.Name,
+			"jersey_number":          player.JerseyNumber,
+			"position":               player.Position,
+			"photo_url":              player.PhotoURL,
+			"date_of_birth":          player.DateOfBirth,
+			"nationality":            player.Nationality,
+			"club_id":                player.ClubID,
+			"national_team_id":       player.NationalTeamID,
+			"national_team":          player.NationalTeam,
+			"national_jersey_number": player.NationalJerseyNumber,
+			"club":                   player.Club,
+			"stats":                  player.Stats,
 		},
 	})
 }
@@ -106,7 +112,10 @@ func ListPlayers(c *fiber.Ctx) error {
 
 	// Apply filters
 	if clubID := c.Query("club_id"); clubID != "" {
-		query = query.Where("club_id = ?", clubID)
+		query = teamPlayers(query, clubID)
+	}
+	if teamID := c.Query("national_team_id"); teamID != "" {
+		query = query.Where("national_team_id = ?", teamID)
 	}
 	if position := c.Query("position"); position != "" {
 		query = query.Where("position = ?", position)
@@ -115,7 +124,7 @@ func ListPlayers(c *fiber.Ctx) error {
 		query = query.Where("nationality = ?", nationality)
 	}
 	if name := c.Query("name"); name != "" {
-		query = query.Where("name LIKE ?", "%"+name+"%")
+		query = query.Where("LOWER(name) LIKE LOWER(?)", "%"+name+"%")
 	}
 
 	// Get total count
@@ -128,7 +137,7 @@ func ListPlayers(c *fiber.Ctx) error {
 
 	// Get paginated results
 	var players []models.Player
-	if err := query.Preload("Club").Preload("Stats").
+	if err := query.Preload("Club").Preload("NationalTeam").Preload("Stats").
 		Limit(perPage).Offset(offset).
 		Order("created_at DESC").
 		Find(&players).Error; err != nil {
@@ -141,15 +150,21 @@ func ListPlayers(c *fiber.Ctx) error {
 	playerList := make([]fiber.Map, len(players))
 	for i, player := range players {
 		playerList[i] = fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"created_at":    player.CreatedAt,
-			"updated_at":    player.UpdatedAt,
+			"id":                     player.ID,
+			"uuid":                   player.UUID,
+			"name":                   player.Name,
+			"jersey_number":          player.JerseyNumber,
+			"position":               player.Position,
+			"nationality":            player.Nationality,
+			"club_id":                player.ClubID,
+			"national_team_id":       player.NationalTeamID,
+			"national_team":          player.NationalTeam,
+			"national_jersey_number": player.NationalJerseyNumber,
+			"created_at":             player.CreatedAt,
+			"updated_at":             player.UpdatedAt,
+			"club":                   player.Club,
+			"photo_url":              player.PhotoURL,
+			"date_of_birth":          player.DateOfBirth,
 		}
 	}
 
@@ -170,13 +185,15 @@ func ListPlayers(c *fiber.Ctx) error {
 // CreatePlayer creates a new player (Note: AssignPlayerToClub in club.go also creates)
 func CreatePlayer(c *fiber.Ctx) error {
 	var req struct {
-		Name         string  `json:"name"`
-		JerseyNumber int     `json:"jersey_number"`
-		Position     string  `json:"position"`
-		PhotoURL     *string `json:"photo_url"`
-		DateOfBirth  string  `json:"date_of_birth"` // Format: YYYY-MM-DD
-		Nationality  string  `json:"nationality"`
-		ClubID       *uint   `json:"club_id"` // Optional, can be assigned later
+		Name                 string  `json:"name"`
+		JerseyNumber         int     `json:"jersey_number"`
+		Position             string  `json:"position"`
+		PhotoURL             *string `json:"photo_url"`
+		DateOfBirth          string  `json:"date_of_birth"` // Format: YYYY-MM-DD
+		Nationality          string  `json:"nationality"`
+		NationalTeamID       *uint   `json:"national_team_id"`
+		NationalJerseyNumber *int    `json:"national_jersey_number"`
+		ClubID               *uint   `json:"club_id"` // Optional, can be assigned later
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -225,6 +242,16 @@ func CreatePlayer(c *fiber.Ctx) error {
 		}
 	}
 
+	if req.ClubID != nil {
+		var primary models.Club
+		if err := database.DB.First(&primary, *req.ClubID).Error; err != nil {
+			return err
+		}
+		if nationalTeam(primary) {
+			return fiber.NewError(400, "Primary club must be a club team")
+		}
+	}
+
 	// One shirt number per club (see models.Player).
 	if req.ClubID != nil {
 		if err := ensureJerseyFree(*req.ClubID, req.JerseyNumber, 0); err != nil {
@@ -234,43 +261,54 @@ func CreatePlayer(c *fiber.Ctx) error {
 		}
 	}
 
+	if err := checkNationalTeam(database.DB, req.NationalTeamID, req.NationalJerseyNumber, 0); err != nil {
+		return fiber.NewError(400, err.Error())
+	}
 	// Create player
 	player := models.Player{
-		Name:         req.Name,
-		JerseyNumber: req.JerseyNumber,
-		Position:     req.Position,
-		PhotoURL:     req.PhotoURL,
-		DateOfBirth:  dob,
-		Nationality:  req.Nationality,
-		ClubID:       0, // Will be set if req.ClubID is provided
+		Name:           req.Name,
+		JerseyNumber:   req.JerseyNumber,
+		Position:       req.Position,
+		PhotoURL:       req.PhotoURL,
+		DateOfBirth:    dob,
+		Nationality:    req.Nationality,
+		NationalTeamID: req.NationalTeamID, NationalJerseyNumber: req.NationalJerseyNumber,
+		ClubID: 0, // Will be set if req.ClubID is provided
 	}
 
 	if req.ClubID != nil {
 		player.ClubID = *req.ClubID
 	}
 
-	if err := database.DB.Create(&player).Error; err != nil {
+	create := database.DB.Omit("Club", "NationalTeam", "Stats")
+	if player.ClubID == 0 {
+		create = create.Omit("ClubID")
+	}
+	if err := create.Create(&player).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to create player",
 		})
 	}
 
 	// Load relationships for response
-	database.DB.Preload("Club").First(&player, player.ID)
+	database.DB.Preload("Club").Preload("NationalTeam").First(&player, player.ID)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message": "Player created successfully",
 		"player": fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"photo_url":     player.PhotoURL,
-			"date_of_birth": player.DateOfBirth,
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"club":          player.Club,
+			"id":                     player.ID,
+			"uuid":                   player.UUID,
+			"name":                   player.Name,
+			"jersey_number":          player.JerseyNumber,
+			"position":               player.Position,
+			"photo_url":              player.PhotoURL,
+			"date_of_birth":          player.DateOfBirth,
+			"nationality":            player.Nationality,
+			"club_id":                player.ClubID,
+			"national_team_id":       player.NationalTeamID,
+			"national_team":          player.NationalTeam,
+			"national_jersey_number": player.NationalJerseyNumber,
+			"club":                   player.Club,
 		},
 	})
 }
@@ -287,13 +325,15 @@ func UpdatePlayer(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Name         *string `json:"name,omitempty"`
-		JerseyNumber *int    `json:"jersey_number,omitempty"`
-		Position     *string `json:"position,omitempty"`
-		PhotoURL     *string `json:"photo_url,omitempty"`
-		DateOfBirth  *string `json:"date_of_birth,omitempty"` // Format: YYYY-MM-DD
-		Nationality  *string `json:"nationality,omitempty"`
-		ClubID       *uint   `json:"club_id,omitempty"`
+		Name                 *string `json:"name,omitempty"`
+		JerseyNumber         *int    `json:"jersey_number,omitempty"`
+		Position             *string `json:"position,omitempty"`
+		PhotoURL             *string `json:"photo_url,omitempty"`
+		DateOfBirth          *string `json:"date_of_birth,omitempty"` // Format: YYYY-MM-DD
+		Nationality          *string `json:"nationality,omitempty"`
+		NationalTeamID       *uint   `json:"national_team_id,omitempty"`
+		NationalJerseyNumber *int    `json:"national_jersey_number,omitempty"`
+		ClubID               *uint   `json:"club_id,omitempty"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -345,7 +385,26 @@ func UpdatePlayer(c *fiber.Ctx) error {
 		}
 	}
 
+	nextNationalID := player.NationalTeamID
+	nextNationalJersey := player.NationalJerseyNumber
+	if req.NationalTeamID != nil {
+		nextNationalID = req.NationalTeamID
+		if *req.NationalTeamID == 0 {
+			nextNationalID = nil
+			nextNationalJersey = nil
+		}
+	}
+	if req.NationalJerseyNumber != nil {
+		nextNationalJersey = req.NationalJerseyNumber
+	}
+	if err := checkNationalTeam(database.DB, nextNationalID, nextNationalJersey, player.ID); err != nil {
+		return fiber.NewError(409, err.Error())
+	}
 	updates := make(map[string]interface{})
+	if req.NationalTeamID != nil || req.NationalJerseyNumber != nil {
+		updates["national_team_id"] = nextNationalID
+		updates["national_jersey_number"] = nextNationalJersey
+	}
 
 	// Update name if provided
 	if req.Name != nil {
@@ -397,6 +456,9 @@ func UpdatePlayer(c *fiber.Ctx) error {
 				"error": "Database error",
 			})
 		}
+		if nationalTeam(club) {
+			return fiber.NewError(400, "Primary club must be a club team")
+		}
 		updates["club_id"] = *req.ClubID
 	}
 
@@ -410,21 +472,24 @@ func UpdatePlayer(c *fiber.Ctx) error {
 	}
 
 	// Reload player with relationships
-	database.DB.Preload("Club").Preload("Stats").First(&player, playerID)
+	database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats").First(&player, playerID)
 
 	return c.JSON(fiber.Map{
 		"message": "Player updated successfully",
 		"player": fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"photo_url":     player.PhotoURL,
-			"date_of_birth": player.DateOfBirth,
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"club":          player.Club,
+			"id":                     player.ID,
+			"uuid":                   player.UUID,
+			"name":                   player.Name,
+			"jersey_number":          player.JerseyNumber,
+			"position":               player.Position,
+			"photo_url":              player.PhotoURL,
+			"date_of_birth":          player.DateOfBirth,
+			"nationality":            player.Nationality,
+			"club_id":                player.ClubID,
+			"national_team_id":       player.NationalTeamID,
+			"national_team":          player.NationalTeam,
+			"national_jersey_number": player.NationalJerseyNumber,
+			"club":                   player.Club,
 		},
 	})
 }
@@ -490,24 +555,29 @@ func GetPlayersByClub(c *fiber.Ctx) error {
 	clubID := c.Params("club_id")
 
 	var players []models.Player
-	if err := database.DB.Preload("Stats").Where("club_id = ?", clubID).Find(&players).Error; err != nil {
+	if err := teamPlayers(database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats"), clubID).Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get players by club",
 		})
 	}
 
+	teamID, _ := strconv.ParseUint(clubID, 10, 32)
+	projectSquad(players, uint(teamID))
 	playerList := make([]fiber.Map, len(players))
 	for i, player := range players {
 		playerList[i] = fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"stats":         player.Stats,
-			"created_at":    player.CreatedAt,
+			"id":                     player.ID,
+			"uuid":                   player.UUID,
+			"name":                   player.Name,
+			"jersey_number":          player.JerseyNumber,
+			"position":               player.Position,
+			"nationality":            player.Nationality,
+			"club_id":                player.ClubID,
+			"national_team_id":       player.NationalTeamID,
+			"national_team":          player.NationalTeam,
+			"national_jersey_number": player.NationalJerseyNumber,
+			"stats":                  player.Stats,
+			"created_at":             player.CreatedAt,
 		}
 	}
 
@@ -522,7 +592,7 @@ func GetPlayersByPosition(c *fiber.Ctx) error {
 	position := c.Params("position")
 
 	var players []models.Player
-	if err := database.DB.Preload("Club").Preload("Stats").Where("position = ?", position).Find(&players).Error; err != nil {
+	if err := database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats").Where("position = ?", position).Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get players by position",
 		})
@@ -531,15 +601,18 @@ func GetPlayersByPosition(c *fiber.Ctx) error {
 	playerList := make([]fiber.Map, len(players))
 	for i, player := range players {
 		playerList[i] = fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"club":          player.Club,
-			"created_at":    player.CreatedAt,
+			"id":                     player.ID,
+			"uuid":                   player.UUID,
+			"name":                   player.Name,
+			"jersey_number":          player.JerseyNumber,
+			"position":               player.Position,
+			"nationality":            player.Nationality,
+			"club_id":                player.ClubID,
+			"national_team_id":       player.NationalTeamID,
+			"national_team":          player.NationalTeam,
+			"national_jersey_number": player.NationalJerseyNumber,
+			"club":                   player.Club,
+			"created_at":             player.CreatedAt,
 		}
 	}
 
@@ -554,7 +627,7 @@ func GetPlayersByNationality(c *fiber.Ctx) error {
 	nationality := c.Params("nationality")
 
 	var players []models.Player
-	if err := database.DB.Preload("Club").Preload("Stats").Where("nationality = ?", nationality).Find(&players).Error; err != nil {
+	if err := database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats").Where("nationality = ?", nationality).Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get players by nationality",
 		})
@@ -563,15 +636,18 @@ func GetPlayersByNationality(c *fiber.Ctx) error {
 	playerList := make([]fiber.Map, len(players))
 	for i, player := range players {
 		playerList[i] = fiber.Map{
-			"id":            player.ID,
-			"uuid":          player.UUID,
-			"name":          player.Name,
-			"jersey_number": player.JerseyNumber,
-			"position":      player.Position,
-			"nationality":   player.Nationality,
-			"club_id":       player.ClubID,
-			"club":          player.Club,
-			"created_at":    player.CreatedAt,
+			"id":                     player.ID,
+			"uuid":                   player.UUID,
+			"name":                   player.Name,
+			"jersey_number":          player.JerseyNumber,
+			"position":               player.Position,
+			"nationality":            player.Nationality,
+			"club_id":                player.ClubID,
+			"national_team_id":       player.NationalTeamID,
+			"national_team":          player.NationalTeam,
+			"national_jersey_number": player.NationalJerseyNumber,
+			"club":                   player.Club,
+			"created_at":             player.CreatedAt,
 		}
 	}
 
@@ -632,7 +708,7 @@ func TransferPlayer(c *fiber.Ctx) error {
 
 	// Find player
 	var player models.Player
-	if err := database.DB.Preload("Club").First(&player, req.PlayerID).Error; err != nil {
+	if err := database.DB.Preload("Club").Preload("NationalTeam").First(&player, req.PlayerID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "Player not found",
@@ -663,6 +739,9 @@ func TransferPlayer(c *fiber.Ctx) error {
 		})
 	}
 
+	if nationalTeam(newClub) {
+		return fiber.NewError(400, "Use national team registration to join a national squad")
+	}
 	oldClubID := player.ClubID
 
 	// Transfer player to new club
@@ -673,7 +752,7 @@ func TransferPlayer(c *fiber.Ctx) error {
 	}
 
 	// Reload player
-	database.DB.Preload("Club").First(&player, req.PlayerID)
+	database.DB.Preload("Club").Preload("NationalTeam").First(&player, req.PlayerID)
 
 	return c.JSON(fiber.Map{
 		"message": "Player transferred successfully",
@@ -693,7 +772,7 @@ func GetPlayerStatistics(c *fiber.Ctx) error {
 	playerID := c.Params("player_id")
 
 	var player models.Player
-	if err := database.DB.Preload("Club").Preload("Stats").First(&player, playerID).Error; err != nil {
+	if err := database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats").First(&player, playerID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 				"error": "Player not found",
@@ -711,15 +790,18 @@ func GetPlayerStatistics(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"player_id":     player.ID,
-		"player_name":   player.Name,
-		"jersey_number": player.JerseyNumber,
-		"position":      player.Position,
-		"age":           age,
-		"nationality":   player.Nationality,
-		"club_id":       player.ClubID,
-		"club_name":     player.Club.Name,
-		"stats":         player.Stats,
+		"player_id":              player.ID,
+		"player_name":            player.Name,
+		"jersey_number":          player.JerseyNumber,
+		"position":               player.Position,
+		"age":                    age,
+		"nationality":            player.Nationality,
+		"club_id":                player.ClubID,
+		"national_team_id":       player.NationalTeamID,
+		"national_team":          player.NationalTeam,
+		"national_jersey_number": player.NationalJerseyNumber,
+		"club_name":              player.Club.Name,
+		"stats":                  player.Stats,
 	})
 }
 
@@ -727,7 +809,7 @@ func GetPlayerStatistics(c *fiber.Ctx) error {
 // other than excludeID. Soft-deleted players are ignored, matching the partial
 // unique index on players.
 func ensureJerseyFree(clubID uint, jersey int, excludeID uint) error {
-	if clubID == 0 {
+	if clubID == 0 || jersey == 0 {
 		return nil
 	}
 

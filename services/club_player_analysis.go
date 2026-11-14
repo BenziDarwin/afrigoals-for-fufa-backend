@@ -62,7 +62,7 @@ func GetClubPlayerAnalysis(c *fiber.Ctx) error {
 		return fiber.NewError(500, "Could not load club")
 	}
 	players := []models.Player{}
-	if db.Where("club_id = ?", id).Find(&players).Error != nil {
+	if teamPlayers(db, id).Find(&players).Error != nil {
 		return fiber.NewError(500, "Could not load squad")
 	}
 	ids := []uint{}
@@ -93,7 +93,7 @@ func GetClubPlayerAnalysis(c *fiber.Ctx) error {
 	matches := []models.Match{}
 	reviews := []models.MatchReportReview{}
 	if len(matchIDs) > 0 {
-		if db.Where("id IN ?", matchIDs).Find(&matches).Error != nil {
+		if db.Where("id IN ? AND (home_club_id = ? OR away_club_id = ?)", matchIDs, id, id).Find(&matches).Error != nil {
 			return fiber.NewError(500, "Could not load squad matches")
 		}
 		if db.Where("match_id IN ?", matchIDs).Find(&reviews).Error != nil {

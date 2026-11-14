@@ -143,13 +143,13 @@ func SetupRoutes(app *fiber.App) {
 	clubs := api.Group("/clubs")
 	clubs.Get("/:club_id/player-analysis", services.GetClubPlayerAnalysis)
 	{
-		clubs.Get("", getCache, services.ListClubs)
-		clubs.Get("/:id", getCache, services.GetClubByID)
-		clubs.Get("/uuid/:uuid", getCache, services.GetClubByUUID)
-		clubs.Get("/league/:league_id", getCache, services.GetClubsByLeague)
-		clubs.Get("/:club_id/players", getCache, services.GetClubPlayers)
-		clubs.Get("/:club_id/leagues", getCache, services.GetClubLeagues)
-		clubs.Get("/:club_id/statistics", getCache, services.GetClubStatistics)
+		clubs.Get("", services.ListClubs)
+		clubs.Get("/:id", services.GetClubByID)
+		clubs.Get("/uuid/:uuid", services.GetClubByUUID)
+		clubs.Get("/league/:league_id", services.GetClubsByLeague)
+		clubs.Get("/:club_id/players", services.GetClubPlayers)
+		clubs.Get("/:club_id/leagues", services.GetClubLeagues)
+		clubs.Get("/:club_id/statistics", services.GetClubStatistics)
 
 		clubManagerRoutes := clubs.Group("")
 		clubManagerRoutes.Use(middleware.ClubManagerOrAbove())
@@ -183,15 +183,15 @@ func SetupRoutes(app *fiber.App) {
 
 	players := api.Group("/players")
 	{
-		players.Get("", getCache, services.ListPlayers)
+		players.Get("", services.ListPlayers)
 		players.Get("/:id/profile-analysis", services.GetPlayerProfileAnalysis)
-		players.Get("/:id", getCache, services.GetPlayerByID)
-		players.Get("/uuid/:uuid", getCache, services.GetPlayerByUUID)
-		players.Get("/club/:club_id", getCache, services.GetPlayersByClub)
-		players.Get("/position/:position", getCache, services.GetPlayersByPosition)
-		players.Get("/nationality/:nationality", getCache, services.GetPlayersByNationality)
-		players.Get("/free", getCache, services.GetFreePlayers)
-		players.Get("/:player_id/statistics", getCache, services.GetPlayerStatistics)
+		players.Get("/:id", services.GetPlayerByID)
+		players.Get("/uuid/:uuid", services.GetPlayerByUUID)
+		players.Get("/club/:club_id", services.GetPlayersByClub)
+		players.Get("/position/:position", services.GetPlayersByPosition)
+		players.Get("/nationality/:nationality", services.GetPlayersByNationality)
+		players.Get("/free", services.GetFreePlayers)
+		players.Get("/:player_id/statistics", services.GetPlayerStatistics)
 
 		// Club managers create players through /clubs/create-player, so they
 		// must be able to delete them too. DeletePlayer itself verifies the
@@ -201,6 +201,7 @@ func SetupRoutes(app *fiber.App) {
 		// moderatorPlayers below calls Use() on the same /players prefix, and
 		// that applies to everything registered after it, so a grouped version
 		// of this route would still be caught by LeagueAdminOrAbove.
+		players.Put("/:id/national-team", middleware.ClubManagerOrAbove(), services.SetPlayerNationalTeam)
 		players.Put("/:id", middleware.ClubManagerOrAbove(), services.UpdatePlayer)
 		players.Delete("/:id", middleware.ClubManagerOrAbove(), services.DeletePlayer)
 
@@ -217,7 +218,7 @@ func SetupRoutes(app *fiber.App) {
 	// ========================================
 	matches := api.Group("/matches")
 	{
-		matches.Get("", getCache, services.ListMatches)
+		matches.Get("", services.ListMatches)
 		matches.Get("/:id", getCache, services.GetMatchByID)
 		matches.Get("/uuid/:uuid", getCache, services.GetMatchByUUID)
 		matches.Get("/club/:club_id", getCache, services.GetMatchesByClub)
@@ -369,7 +370,7 @@ func SetupRoutes(app *fiber.App) {
 		// Clip objects live in R2 and are mutated by generate/delete endpoints;
 		// do not cache this list or deleted clips can reappear until cache expiry.
 		analystMatches.Get("/clips", services.ListMatchClips)
-		analystMatches.Get("/players", getCache, services.GetMatchRosterPlayers)
+		analystMatches.Get("/players", services.GetMatchRosterPlayers)
 		analystMatches.Get("/event-types", getCache, services.ListEventTypes)
 		analystMatches.Get("/analysis-events", getCache, services.ListAnalysisEvents)
 		analystMatches.Get("/analysis-events/:id", getCache, services.GetAnalysisEventByID)
