@@ -2,6 +2,9 @@
 .env.local
 uploads/
 
+# Local build caches and temporary task files
+.cache/
+
 # Go build caches (accidentally committed in 25e536d)
 .gocache/
 .codex-go-build-cache/
