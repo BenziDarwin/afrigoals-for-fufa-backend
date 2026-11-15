@@ -363,6 +363,12 @@ func UpdatePlayer(c *fiber.Ctx) error {
 		})
 	}
 
+	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
+		return fiber.NewError(400, "Player name is required")
+	}
+	if req.JerseyNumber != nil && (*req.JerseyNumber < 0 || *req.JerseyNumber > 99) {
+		return fiber.NewError(400, "Shirt number must be between 1 and 99, or zero when unassigned")
+	}
 	// Find player
 	var player models.Player
 	if err := database.DB.First(&player, playerID).Error; err != nil {
@@ -383,7 +389,7 @@ func UpdatePlayer(c *fiber.Ctx) error {
 		})
 	}
 
-	if !middleware.CanManagePlayer(user, &player) {
+	if !canEditPlayerProfile(user, &player) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": "You do not have permission to update this player",
 		})
@@ -429,7 +435,7 @@ func UpdatePlayer(c *fiber.Ctx) error {
 
 	// Update name if provided
 	if req.Name != nil {
-		updates["name"] = *req.Name
+		updates["name"] = strings.TrimSpace(*req.Name)
 	}
 
 	// Update jersey number if provided
@@ -485,10 +491,22 @@ func UpdatePlayer(c *fiber.Ctx) error {
 
 	// Perform update if there are changes
 	if len(updates) > 0 {
-		if err := database.DB.Model(&player).Updates(updates).Error; err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-				"error": "Failed to update player",
-			})
+		err := database.DB.Transaction(func(tx *gorm.DB) error {
+			var current models.Player
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, player.ID).Error; err != nil {
+				return err
+			}
+			sameNational := current.NationalTeamID == nil && player.NationalTeamID == nil || current.NationalTeamID != nil && player.NationalTeamID != nil && *current.NationalTeamID == *player.NationalTeamID
+			if current.ClubID != player.ClubID || !sameNational {
+				return fiber.NewError(409, "The player's registration changed. Reload their profile before editing")
+			}
+			if !canEditPlayerProfile(user, &current) {
+				return fiber.ErrForbidden
+			}
+			return tx.Model(&current).Updates(updates).Error
+		})
+		if err != nil {
+			return err
 		}
 	}
 
@@ -767,16 +785,12 @@ func TransferPlayer(c *fiber.Ctx) error {
 				return err
 			}
 		} else {
-			result := tx.Where("LOWER(btrim(name))=LOWER(?) AND country_code=public.afrigoals_country_code(?) AND team_type='club'", strings.TrimSpace(req.NewClubName), req.NewClubCountry).First(&club)
-			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-				club = models.Club{Name: strings.TrimSpace(req.NewClubName), Country: req.NewClubCountry, TeamType: "club", IsExternal: true}
-				if err := tx.Create(&club).Error; err != nil {
-					return err
-				}
-			} else if result.Error != nil {
-				return result.Error
+			club, err = resolvePlayerClub(tx, 0, req.NewClubName, req.NewClubCountry)
+			if err != nil {
+				return err
 			}
 		}
+
 		if nationalTeam(club) {
 			return fiber.NewError(400, "Select a club as the transfer destination")
 		}

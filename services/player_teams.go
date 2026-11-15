@@ -201,19 +201,9 @@ func createSquadPlayer(c *fiber.Ctx) error {
 			player.JerseyNumber = req.ClubJerseyNumber
 			player.ClubID = req.PrimaryClubID
 			if player.ClubID == 0 {
-				name := strings.TrimSpace(req.PrimaryClubName)
-				if name == "" || len(name) > 150 || strings.TrimSpace(req.PrimaryClubCountry) == "" || len(req.PrimaryClubCountry) > 100 {
-					return fiber.NewError(400, "Select the player's club or enter their overseas club name")
-				}
-				var club models.Club
-				result := tx.Where("LOWER(name) = LOWER(?) AND LOWER(COALESCE(country, '')) = LOWER(?) AND team_type = ?", name, strings.TrimSpace(req.PrimaryClubCountry), "club").First(&club)
-				if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-					club = models.Club{Name: name, TeamType: "club", Country: strings.TrimSpace(req.PrimaryClubCountry), IsExternal: true}
-					if err := tx.Create(&club).Error; err != nil {
-						return err
-					}
-				} else if result.Error != nil {
-					return result.Error
+				club, err := resolvePlayerClub(tx, 0, req.PrimaryClubName, req.PrimaryClubCountry)
+				if err != nil {
+					return err
 				}
 				player.ClubID = club.ID
 			}

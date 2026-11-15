@@ -188,6 +188,7 @@ func SetupRoutes(app *fiber.App) {
 	{
 		players.Get("", services.ListPlayers)
 		players.Get("/:id/club-history", services.GetPlayerClubHistory)
+		players.Get("/:id/portfolio", services.GetPlayerPortfolio)
 		players.Get("/:id/profile-analysis", services.GetPlayerProfileAnalysis)
 		players.Get("/:id", services.GetPlayerByID)
 		players.Get("/uuid/:uuid", services.GetPlayerByUUID)
@@ -205,6 +206,15 @@ func SetupRoutes(app *fiber.App) {
 		// moderatorPlayers below calls Use() on the same /players prefix, and
 		// that applies to everything registered after it, so a grouped version
 		// of this route would still be caught by LeagueAdminOrAbove.
+		portfolioWrites := players.Group("/:id/portfolio", middleware.ClubManagerOrAbove())
+		portfolioWrites.Post("/career", services.SavePlayerCareerEntry)
+		portfolioWrites.Put("/career/:entry_id", services.SavePlayerCareerEntry)
+		portfolioWrites.Delete("/career/:entry_id", services.DeletePlayerCareerEntry)
+		portfolioWrites.Post("/highlights", services.SavePlayerHighlight)
+		portfolioWrites.Put("/highlights/:highlight_id", services.SavePlayerHighlight)
+		portfolioWrites.Delete("/highlights/:highlight_id", services.DeletePlayerHighlight)
+		portfolioWrites.Post("/highlights/upload", services.InitPlayerHighlightUpload)
+		portfolioWrites.Post("/highlights/:highlight_id/complete", services.CompletePlayerHighlightUpload)
 		players.Put("/:id/national-team", middleware.ClubManagerOrAbove(), services.SetPlayerNationalTeam)
 		players.Put("/:id", middleware.ClubManagerOrAbove(), services.UpdatePlayer)
 		players.Delete("/:id", middleware.ClubManagerOrAbove(), services.DeletePlayer)
