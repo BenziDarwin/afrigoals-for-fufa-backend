@@ -172,7 +172,7 @@ func createSquadPlayer(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(400, "Date of birth must use YYYY-MM-DD")
 	}
-	if req.JerseyNumber < 1 || req.JerseyNumber > 99 || req.ClubJerseyNumber < 0 || req.ClubJerseyNumber > 99 {
+	if req.JerseyNumber < 0 || req.JerseyNumber > 99 || req.ClubJerseyNumber < 0 || req.ClubJerseyNumber > 99 {
 		return fiber.NewError(400, "Shirt numbers must be between 1 and 99")
 	}
 	player := models.Player{Name: strings.TrimSpace(req.Name), Position: req.Position, DateOfBirth: dob, Nationality: req.Nationality, ClubID: req.ClubID, JerseyNumber: req.JerseyNumber, NationalTeamID: req.NationalTeamID, NationalJerseyNumber: req.NationalJerseyNumber}
@@ -184,20 +184,31 @@ func createSquadPlayer(c *fiber.Ctx) error {
 		if err := tx.First(&team, req.ClubID).Error; err != nil {
 			return err
 		}
+		if !nationalTeam(team) && req.JerseyNumber == 0 {
+			return fiber.NewError(400, "Club shirt number is required")
+		}
 		if nationalTeam(team) {
+			var existing models.Player
+			match := tx.Where("LOWER(btrim(name))=LOWER(?) AND date_of_birth::date=?::date AND country_code=public.afrigoals_country_code(?)", strings.TrimSpace(req.Name), req.DateOfBirth, req.Nationality).First(&existing)
+			if match.Error == nil {
+				return fiber.NewError(409, "This player already has an Afrigoals profile and is listed automatically for their national team")
+			}
+			if !errors.Is(match.Error, gorm.ErrRecordNotFound) {
+				return match.Error
+			}
 			player.NationalTeamID = &team.ID
 			player.NationalJerseyNumber = &req.JerseyNumber
 			player.JerseyNumber = req.ClubJerseyNumber
 			player.ClubID = req.PrimaryClubID
 			if player.ClubID == 0 {
 				name := strings.TrimSpace(req.PrimaryClubName)
-				if name == "" || len(name) > 150 || len(req.PrimaryClubCountry) > 100 {
+				if name == "" || len(name) > 150 || strings.TrimSpace(req.PrimaryClubCountry) == "" || len(req.PrimaryClubCountry) > 100 {
 					return fiber.NewError(400, "Select the player's club or enter their overseas club name")
 				}
 				var club models.Club
 				result := tx.Where("LOWER(name) = LOWER(?) AND LOWER(COALESCE(country, '')) = LOWER(?) AND team_type = ?", name, strings.TrimSpace(req.PrimaryClubCountry), "club").First(&club)
 				if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-					club = models.Club{Name: name, TeamType: "club", Country: strings.TrimSpace(req.PrimaryClubCountry)}
+					club = models.Club{Name: name, TeamType: "club", Country: strings.TrimSpace(req.PrimaryClubCountry), IsExternal: true}
 					if err := tx.Create(&club).Error; err != nil {
 						return err
 					}
@@ -210,6 +221,9 @@ func createSquadPlayer(c *fiber.Ctx) error {
 		var primary models.Club
 		if err := tx.First(&primary, player.ClubID).Error; err != nil {
 			return err
+		}
+		if nationalTeam(team) && !primary.IsExternal && user.Role != models.AfrigoalsAdmin {
+			return fiber.NewError(400, "Register domestic players through their club. Matching players appear in the national team automatically")
 		}
 		if nationalTeam(primary) {
 			return fiber.NewError(400, "Primary club must be a club team")
@@ -228,12 +242,12 @@ func createSquadPlayer(c *fiber.Ctx) error {
 	return c.Status(201).JSON(fiber.Map{"success": true, "message": "Player added", "data": player})
 }
 
-func loadNationalRoster(db *gorm.DB, club *models.Club) error {
+func loadNationalRoster(db *gorm.DB, club *models.Club, user *models.User) error {
 	if !nationalTeam(*club) {
 		projectSquad(club.Players, club.ID)
 		return nil
 	}
-	if err := teamPlayers(db.Preload("Club").Preload("NationalTeam").Preload("Stats"), club.ID).Find(&club.Players).Error; err != nil {
+	if err := teamPlayers(visiblePlayers(db.Preload("Club").Preload("NationalTeam").Preload("Stats"), user), club.ID).Find(&club.Players).Error; err != nil {
 		return err
 	}
 	projectSquad(club.Players, club.ID)

@@ -3,7 +3,9 @@ package services
 import (
 	"errors"
 	"fmt"
+	"gorm.io/gorm/clause"
 	"strconv"
+	"strings"
 	"time"
 
 	"afrigoals.com/database"
@@ -36,6 +38,9 @@ func GetPlayerByID(c *fiber.Ctx) error {
 		})
 	}
 
+	if !canReadPlayer(c, &player) {
+		return fiber.ErrForbidden
+	}
 	return c.JSON(fiber.Map{
 		"player": fiber.Map{
 			"id":                     player.ID,
@@ -46,6 +51,7 @@ func GetPlayerByID(c *fiber.Ctx) error {
 			"photo_url":              player.PhotoURL,
 			"date_of_birth":          player.DateOfBirth,
 			"nationality":            player.Nationality,
+			"country_code":           player.CountryCode,
 			"club_id":                player.ClubID,
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
@@ -72,6 +78,9 @@ func GetPlayerByUUID(c *fiber.Ctx) error {
 		})
 	}
 
+	if !canReadPlayer(c, &player) {
+		return fiber.ErrForbidden
+	}
 	return c.JSON(fiber.Map{
 		"player": fiber.Map{
 			"id":                     player.ID,
@@ -82,6 +91,7 @@ func GetPlayerByUUID(c *fiber.Ctx) error {
 			"photo_url":              player.PhotoURL,
 			"date_of_birth":          player.DateOfBirth,
 			"nationality":            player.Nationality,
+			"country_code":           player.CountryCode,
 			"club_id":                player.ClubID,
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
@@ -108,7 +118,8 @@ func ListPlayers(c *fiber.Ctx) error {
 	offset := (page - 1) * perPage
 
 	// Build query
-	query := database.DB.Model(&models.Player{})
+	user, _ := middleware.GetUserFromContext(c)
+	query := visiblePlayers(database.DB.Model(&models.Player{}), user)
 
 	// Apply filters
 	if clubID := c.Query("club_id"); clubID != "" {
@@ -121,7 +132,7 @@ func ListPlayers(c *fiber.Ctx) error {
 		query = query.Where("position = ?", position)
 	}
 	if nationality := c.Query("nationality"); nationality != "" {
-		query = query.Where("nationality = ?", nationality)
+		query = query.Where("(country_code=public.afrigoals_country_code(?) OR LOWER(nationality)=LOWER(?))", nationality, nationality)
 	}
 	if name := c.Query("name"); name != "" {
 		query = query.Where("LOWER(name) LIKE LOWER(?)", "%"+name+"%")
@@ -156,6 +167,7 @@ func ListPlayers(c *fiber.Ctx) error {
 			"jersey_number":          player.JerseyNumber,
 			"position":               player.Position,
 			"nationality":            player.Nationality,
+			"country_code":           player.CountryCode,
 			"club_id":                player.ClubID,
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
@@ -304,6 +316,7 @@ func CreatePlayer(c *fiber.Ctx) error {
 			"photo_url":              player.PhotoURL,
 			"date_of_birth":          player.DateOfBirth,
 			"nationality":            player.Nationality,
+			"country_code":           player.CountryCode,
 			"club_id":                player.ClubID,
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
@@ -485,6 +498,7 @@ func UpdatePlayer(c *fiber.Ctx) error {
 			"photo_url":              player.PhotoURL,
 			"date_of_birth":          player.DateOfBirth,
 			"nationality":            player.Nationality,
+			"country_code":           player.CountryCode,
 			"club_id":                player.ClubID,
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
@@ -555,7 +569,7 @@ func GetPlayersByClub(c *fiber.Ctx) error {
 	clubID := c.Params("club_id")
 
 	var players []models.Player
-	if err := teamPlayers(database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats"), clubID).Find(&players).Error; err != nil {
+	if err := teamPlayers(visiblePlayers(database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats"), currentPlayerReader(c)), clubID).Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get players by club",
 		})
@@ -572,6 +586,7 @@ func GetPlayersByClub(c *fiber.Ctx) error {
 			"jersey_number":          player.JerseyNumber,
 			"position":               player.Position,
 			"nationality":            player.Nationality,
+			"country_code":           player.CountryCode,
 			"club_id":                player.ClubID,
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
@@ -592,7 +607,7 @@ func GetPlayersByPosition(c *fiber.Ctx) error {
 	position := c.Params("position")
 
 	var players []models.Player
-	if err := database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats").Where("position = ?", position).Find(&players).Error; err != nil {
+	if err := visiblePlayers(database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats"), currentPlayerReader(c)).Where("position = ?", position).Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get players by position",
 		})
@@ -607,6 +622,7 @@ func GetPlayersByPosition(c *fiber.Ctx) error {
 			"jersey_number":          player.JerseyNumber,
 			"position":               player.Position,
 			"nationality":            player.Nationality,
+			"country_code":           player.CountryCode,
 			"club_id":                player.ClubID,
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
@@ -627,7 +643,7 @@ func GetPlayersByNationality(c *fiber.Ctx) error {
 	nationality := c.Params("nationality")
 
 	var players []models.Player
-	if err := database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats").Where("nationality = ?", nationality).Find(&players).Error; err != nil {
+	if err := visiblePlayers(database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats"), currentPlayerReader(c)).Where("(country_code=public.afrigoals_country_code(?) OR LOWER(nationality)=LOWER(?))", nationality, nationality).Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get players by nationality",
 		})
@@ -642,6 +658,7 @@ func GetPlayersByNationality(c *fiber.Ctx) error {
 			"jersey_number":          player.JerseyNumber,
 			"position":               player.Position,
 			"nationality":            player.Nationality,
+			"country_code":           player.CountryCode,
 			"club_id":                player.ClubID,
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
@@ -687,84 +704,88 @@ func GetFreePlayers(c *fiber.Ctx) error {
 
 // TransferPlayer transfers a player from one club to another
 func TransferPlayer(c *fiber.Ctx) error {
+	user, err := middleware.GetUserFromContext(c)
+	if err != nil {
+		return fiber.ErrUnauthorized
+	}
 	var req struct {
-		PlayerID   uint `json:"player_id"`
-		NewClubID  uint `json:"new_club_id"`
-		FromClubID uint `json:"from_club_id"` // Optional validation
+		PlayerID       uint   `json:"player_id"`
+		NewClubID      uint   `json:"new_club_id"`
+		FromClubID     uint   `json:"from_club_id"`
+		NewClubName    string `json:"new_club_name"`
+		NewClubCountry string `json:"new_club_country"`
+		JerseyNumber   *int   `json:"jersey_number"`
 	}
-
-	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid request body",
-		})
+	if c.BodyParser(&req) != nil || req.PlayerID == 0 {
+		return fiber.NewError(400, "Player ID is required")
 	}
-
-	// Validate required fields
-	if req.PlayerID == 0 || req.NewClubID == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Player ID and New Club ID are required",
-		})
+	if req.NewClubID == 0 && (user.Role != models.AfrigoalsAdmin || strings.TrimSpace(req.NewClubName) == "" || strings.TrimSpace(req.NewClubCountry) == "") {
+		return fiber.NewError(400, "Select a destination club or provide its name and country as an administrator")
 	}
-
-	// Find player
+	if req.JerseyNumber != nil && (*req.JerseyNumber < 0 || *req.JerseyNumber > 99) {
+		return fiber.NewError(400, "Shirt number must be between 1 and 99, or zero when unassigned")
+	}
 	var player models.Player
-	if err := database.DB.Preload("Club").Preload("NationalTeam").First(&player, req.PlayerID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-				"error": "Player not found",
-			})
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&player, req.PlayerID).Error; err != nil {
+			return err
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Database error",
-		})
-	}
-
-	// Validate from_club_id if provided
-	if req.FromClubID != 0 && player.ClubID != req.FromClubID {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Player is not in the specified source club",
-		})
-	}
-
-	// Verify new club exists
-	var newClub models.Club
-	if err := database.DB.First(&newClub, req.NewClubID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-				"error": "New club not found",
-			})
+		if !middleware.CanManagePlayer(user, &player) {
+			return fiber.ErrForbidden
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Database error",
-		})
-	}
-
-	if nationalTeam(newClub) {
-		return fiber.NewError(400, "Use national team registration to join a national squad")
-	}
-	oldClubID := player.ClubID
-
-	// Transfer player to new club
-	if err := database.DB.Model(&player).Update("club_id", req.NewClubID).Error; err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Failed to transfer player",
-		})
-	}
-
-	// Reload player
-	database.DB.Preload("Club").Preload("NationalTeam").First(&player, req.PlayerID)
-
-	return c.JSON(fiber.Map{
-		"message": "Player transferred successfully",
-		"player": fiber.Map{
-			"id":          player.ID,
-			"uuid":        player.UUID,
-			"name":        player.Name,
-			"old_club_id": oldClubID,
-			"new_club_id": player.ClubID,
-			"club":        player.Club,
-		},
+		if req.FromClubID > 0 && req.FromClubID != player.ClubID {
+			return fiber.NewError(409, "The player has already moved from that club. Reload their profile")
+		}
+		var club models.Club
+		if req.NewClubID > 0 {
+			if err := tx.First(&club, req.NewClubID).Error; err != nil {
+				return err
+			}
+		} else {
+			result := tx.Where("LOWER(btrim(name))=LOWER(?) AND country_code=public.afrigoals_country_code(?) AND team_type='club'", strings.TrimSpace(req.NewClubName), req.NewClubCountry).First(&club)
+			if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+				club = models.Club{Name: strings.TrimSpace(req.NewClubName), Country: req.NewClubCountry, TeamType: "club", IsExternal: true}
+				if err := tx.Create(&club).Error; err != nil {
+					return err
+				}
+			} else if result.Error != nil {
+				return result.Error
+			}
+		}
+		if nationalTeam(club) {
+			return fiber.NewError(400, "Select a club as the transfer destination")
+		}
+		if user.Role != models.AfrigoalsAdmin && !middleware.CanManageClub(user, club.ID) {
+			return fiber.ErrForbidden
+		}
+		jersey := player.JerseyNumber
+		if club.IsExternal {
+			jersey = 0
+		}
+		if req.JerseyNumber != nil {
+			jersey = *req.JerseyNumber
+		}
+		if jersey > 0 {
+			var count int64
+			if err := tx.Model(&models.Player{}).Where("club_id=? AND jersey_number=? AND id<>?", club.ID, jersey, player.ID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count > 0 {
+				return fiber.NewError(409, "That shirt number is already assigned at the destination club")
+			}
+		}
+		if err := tx.Model(&player).Updates(map[string]interface{}{"club_id": club.ID, "jersey_number": jersey}).Error; err != nil {
+			return err
+		}
+		return tx.Preload("Club").Preload("NationalTeam").First(&player, player.ID).Error
 	})
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return fiber.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "message": "Player transferred with their existing profile and history", "player": player})
 }
 
 // GetPlayerStatistics retrieves detailed statistics for a player
@@ -783,6 +804,9 @@ func GetPlayerStatistics(c *fiber.Ctx) error {
 		})
 	}
 
+	if !canReadPlayer(c, &player) {
+		return fiber.ErrForbidden
+	}
 	// Calculate age
 	age := 0
 	if !player.DateOfBirth.IsZero() {
@@ -796,6 +820,7 @@ func GetPlayerStatistics(c *fiber.Ctx) error {
 		"position":               player.Position,
 		"age":                    age,
 		"nationality":            player.Nationality,
+		"country_code":           player.CountryCode,
 		"club_id":                player.ClubID,
 		"national_team_id":       player.NationalTeamID,
 		"national_team":          player.NationalTeam,

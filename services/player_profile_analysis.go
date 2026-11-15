@@ -321,6 +321,9 @@ func GetPlayerProfileAnalysis(c *fiber.Ctx) error {
 	} else if err != nil {
 		return fiber.NewError(500, "Could not load player")
 	}
+	if !canReadPlayer(c, &player) {
+		return fiber.ErrForbidden
+	}
 	var events []models.AnalysisEvent
 	if db.Where("player_id = ? OR secondary_player_id = ?", id, id).Order("timestamp_seconds ASC, id ASC").Find(&events).Error != nil {
 		return fiber.NewError(500, "Could not load player events")

@@ -220,6 +220,7 @@ func CreateLeague(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message": "League created successfully",
+		"success": true,
 		"league": fiber.Map{
 			"id":          league.ID,
 			"uuid":        league.UUID.String(),

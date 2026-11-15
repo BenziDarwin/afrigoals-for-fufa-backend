@@ -1,0 +1,17 @@
+DROP TRIGGER IF EXISTS register_club_league ON public.club_leagues;
+DROP FUNCTION IF EXISTS public.afrigoals_register_club_league();
+DROP TRIGGER IF EXISTS record_player_club_transfer ON public.players;
+DROP FUNCTION IF EXISTS public.afrigoals_record_club_transfer();
+DROP TABLE IF EXISTS public.player_club_histories;
+DROP TRIGGER IF EXISTS populate_national_team ON public.clubs;
+DROP FUNCTION IF EXISTS public.afrigoals_populate_national_team();
+DROP TRIGGER IF EXISTS player_nationality_registration ON public.players;
+DROP FUNCTION IF EXISTS public.afrigoals_player_nationality();
+DROP TRIGGER IF EXISTS normalize_club_country ON public.clubs;
+DROP TRIGGER IF EXISTS normalize_league_country ON public.leagues;
+DROP FUNCTION IF EXISTS public.afrigoals_normalize_team_country();
+ALTER TABLE public.players DROP COLUMN country_code;
+ALTER TABLE public.clubs DROP COLUMN country_code, DROP COLUMN is_external;
+ALTER TABLE public.leagues DROP COLUMN country_code;
+DROP FUNCTION IF EXISTS public.afrigoals_country_code(text);
+DROP TABLE IF EXISTS public.countries;

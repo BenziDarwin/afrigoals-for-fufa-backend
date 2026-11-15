@@ -42,6 +42,8 @@ func SetupRoutes(app *fiber.App) {
 	// PUBLIC ROUTES (No Authentication)
 	// ========================================
 
+	api.Get("/countries", services.ListCountries)
+
 	// Authentication Routes
 	auth := api.Group("/auth")
 	{
@@ -184,6 +186,7 @@ func SetupRoutes(app *fiber.App) {
 	players := api.Group("/players")
 	{
 		players.Get("", services.ListPlayers)
+		players.Get("/:id/club-history", services.GetPlayerClubHistory)
 		players.Get("/:id/profile-analysis", services.GetPlayerProfileAnalysis)
 		players.Get("/:id", services.GetPlayerByID)
 		players.Get("/uuid/:uuid", services.GetPlayerByUUID)

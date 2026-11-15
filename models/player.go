@@ -27,6 +27,7 @@ type Player struct {
 	PhotoURL     *string     `json:"photo_url"`
 	DateOfBirth  time.Time   `json:"date_of_birth"`
 	Nationality  string      `json:"nationality"`
+	CountryCode  *string     `json:"country_code"`
 	Stats        PlayerStats `gorm:"foreignKey:PlayerID"`
 }
 

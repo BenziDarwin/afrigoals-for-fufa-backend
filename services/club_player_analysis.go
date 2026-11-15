@@ -61,8 +61,11 @@ func GetClubPlayerAnalysis(c *fiber.Ctx) error {
 	} else if err != nil {
 		return fiber.NewError(500, "Could not load club")
 	}
+	if club.IsExternal && user.Role != models.AfrigoalsAdmin {
+		return fiber.ErrForbidden
+	}
 	players := []models.Player{}
-	if teamPlayers(db, id).Find(&players).Error != nil {
+	if teamPlayers(visiblePlayers(db, user), id).Find(&players).Error != nil {
 		return fiber.NewError(500, "Could not load squad")
 	}
 	ids := []uint{}

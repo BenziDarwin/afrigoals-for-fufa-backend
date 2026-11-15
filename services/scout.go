@@ -88,13 +88,17 @@ func loadScoutDatabaseCandidates(ctx context.Context, filters scoutFilters, page
 		return nil, 0, err
 	}
 	db := database.DB.WithContext(ctx)
-	query := db.Model(&models.Player{}).Joins("LEFT JOIN clubs ON clubs.id = players.club_id AND clubs.deleted_at IS NULL")
+	var viewer *models.User
+	if len(viewers) > 0 {
+		viewer = viewers[0]
+	}
+	query := visiblePlayers(db.Model(&models.Player{}), viewer).Joins("LEFT JOIN clubs ON clubs.id = players.club_id AND clubs.deleted_at IS NULL")
 	if filters.Query != "" {
 		q := "%" + filters.Query + "%"
 		query = query.Where("players.name ILIKE ? OR clubs.name ILIKE ? OR players.nationality ILIKE ?", q, q, q)
 	}
 	if filters.Nationality != "" {
-		query = query.Where("players.nationality ILIKE ?", "%"+filters.Nationality+"%")
+		query = query.Where("(players.country_code=public.afrigoals_country_code(?) OR players.nationality ILIKE ?)", filters.Nationality, "%"+filters.Nationality+"%")
 	}
 	// Fetch identities before applying the same position normalization as reports.
 	players := []models.Player{}

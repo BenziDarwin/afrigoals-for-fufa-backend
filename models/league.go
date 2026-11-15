@@ -14,6 +14,7 @@ type League struct {
 	UUID        uuid.UUID `gorm:"type:uuid;not null;default:gen_random_uuid();uniqueIndex" json:"uuid"`
 	Name        string    `gorm:"not null" json:"name"`
 	Country     string    `json:"country"`
+	CountryCode *string   `json:"country_code"`
 	Description string    `json:"description"`
 
 	// Many-to-many relationship with Club

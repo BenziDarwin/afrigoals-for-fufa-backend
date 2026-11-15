@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"afrigoals.com/database"
+	"afrigoals.com/middleware"
 	"afrigoals.com/models"
 	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
@@ -34,18 +35,26 @@ func GetClubByID(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := loadNationalRoster(database.DB, &club); err != nil {
+	if club.IsExternal {
+		user, _ := middleware.GetUserFromContext(c)
+		if user == nil || user.Role != models.AfrigoalsAdmin {
+			return fiber.ErrForbidden
+		}
+	}
+	if err := loadNationalRoster(database.DB, &club, currentPlayerReader(c)); err != nil {
 		return fiber.NewError(500, "Could not load squad")
 	}
 	return c.JSON(fiber.Map{
 		"club": fiber.Map{
-			"id":        club.ID,
-			"uuid":      club.UUID,
-			"name":      club.Name,
-			"team_type": club.TeamType,
-			"country":   club.Country,
-			"leagues":   club.Leagues,
-			"players":   club.Players,
+			"id":           club.ID,
+			"uuid":         club.UUID,
+			"name":         club.Name,
+			"team_type":    club.TeamType,
+			"is_external":  club.IsExternal,
+			"country_code": club.CountryCode,
+			"country":      club.Country,
+			"leagues":      club.Leagues,
+			"players":      club.Players,
 		},
 	})
 }
@@ -66,18 +75,26 @@ func GetClubByUUID(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := loadNationalRoster(database.DB, &club); err != nil {
+	if club.IsExternal {
+		user, _ := middleware.GetUserFromContext(c)
+		if user == nil || user.Role != models.AfrigoalsAdmin {
+			return fiber.ErrForbidden
+		}
+	}
+	if err := loadNationalRoster(database.DB, &club, currentPlayerReader(c)); err != nil {
 		return fiber.NewError(500, "Could not load squad")
 	}
 	return c.JSON(fiber.Map{
 		"club": fiber.Map{
-			"id":        club.ID,
-			"uuid":      club.UUID,
-			"name":      club.Name,
-			"team_type": club.TeamType,
-			"country":   club.Country,
-			"leagues":   club.Leagues,
-			"players":   club.Players,
+			"id":           club.ID,
+			"uuid":         club.UUID,
+			"name":         club.Name,
+			"team_type":    club.TeamType,
+			"is_external":  club.IsExternal,
+			"country_code": club.CountryCode,
+			"country":      club.Country,
+			"leagues":      club.Leagues,
+			"players":      club.Players,
 		},
 	})
 }
@@ -99,6 +116,10 @@ func ListClubs(c *fiber.Ctx) error {
 
 	// Build query
 	query := database.DB.Model(&models.Club{})
+	user, _ := middleware.GetUserFromContext(c)
+	if user == nil || user.Role != models.AfrigoalsAdmin {
+		query = query.Where("is_external = false")
+	}
 
 	// Apply filters
 	if leagueID := c.Query("league_id"); leagueID != "" {
@@ -132,7 +153,7 @@ func ListClubs(c *fiber.Ctx) error {
 	// Convert to response format
 	clubList := make([]fiber.Map, len(clubs))
 	for i, club := range clubs {
-		if err := loadNationalRoster(database.DB, &club); err != nil {
+		if err := loadNationalRoster(database.DB, &club, currentPlayerReader(c)); err != nil {
 			return fiber.NewError(500, "Could not load squad")
 		}
 		clubList[i] = fiber.Map{
@@ -140,6 +161,8 @@ func ListClubs(c *fiber.Ctx) error {
 			"uuid":         club.UUID,
 			"name":         club.Name,
 			"team_type":    club.TeamType,
+			"is_external":  club.IsExternal,
+			"country_code": club.CountryCode,
 			"country":      club.Country,
 			"league_count": len(club.Leagues),
 			"player_count": len(club.Players),
@@ -242,12 +265,14 @@ func CreateClub(c *fiber.Ctx) error {
 		"success": true,
 		"message": "Team created successfully",
 		"club": fiber.Map{
-			"id":        club.ID,
-			"uuid":      club.UUID,
-			"name":      club.Name,
-			"team_type": club.TeamType,
-			"country":   club.Country,
-			"leagues":   club.Leagues,
+			"id":           club.ID,
+			"uuid":         club.UUID,
+			"name":         club.Name,
+			"team_type":    club.TeamType,
+			"is_external":  club.IsExternal,
+			"country_code": club.CountryCode,
+			"country":      club.Country,
+			"leagues":      club.Leagues,
 		},
 	})
 }
@@ -347,12 +372,14 @@ func UpdateClub(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"message": "Club updated successfully",
 		"club": fiber.Map{
-			"id":        club.ID,
-			"uuid":      club.UUID,
-			"name":      club.Name,
-			"team_type": club.TeamType,
-			"country":   club.Country,
-			"leagues":   club.Leagues,
+			"id":           club.ID,
+			"uuid":         club.UUID,
+			"name":         club.Name,
+			"team_type":    club.TeamType,
+			"is_external":  club.IsExternal,
+			"country_code": club.CountryCode,
+			"country":      club.Country,
+			"leagues":      club.Leagues,
 		},
 	})
 }
@@ -410,6 +437,8 @@ func GetClubsByLeague(c *fiber.Ctx) error {
 			"uuid":         club.UUID,
 			"name":         club.Name,
 			"team_type":    club.TeamType,
+			"is_external":  club.IsExternal,
+			"country_code": club.CountryCode,
 			"country":      club.Country,
 			"player_count": len(club.Players),
 			"created_at":   club.CreatedAt,
@@ -465,7 +494,7 @@ func GetClubPlayers(c *fiber.Ctx) error {
 	clubID := c.Params("club_id")
 
 	var players []models.Player
-	if err := teamPlayers(database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats"), clubID).Find(&players).Error; err != nil {
+	if err := teamPlayers(visiblePlayers(database.DB.Preload("Club").Preload("NationalTeam").Preload("Stats"), currentPlayerReader(c)), clubID).Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to get club players",
 		})
@@ -627,7 +656,11 @@ func GetClubStatistics(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := loadNationalRoster(database.DB, &club); err != nil {
+	reader := currentPlayerReader(c)
+	if club.IsExternal && (reader == nil || reader.Role != models.AfrigoalsAdmin) {
+		return fiber.ErrForbidden
+	}
+	if err := loadNationalRoster(database.DB, &club, currentPlayerReader(c)); err != nil {
 		return fiber.NewError(500, "Could not load squad")
 	}
 	return c.JSON(fiber.Map{

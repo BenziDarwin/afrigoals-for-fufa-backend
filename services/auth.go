@@ -158,7 +158,8 @@ func RegisterUser(c *fiber.Ctx) error {
 		if err := tx.Where("name = ?", req.ClubName).First(&club).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				club = models.Club{
-					Name: req.ClubName,
+					Name:    req.ClubName,
+					Country: req.Country,
 				}
 				if err := tx.Create(&club).Error; err != nil {
 					tx.Rollback()
@@ -173,6 +174,10 @@ func RegisterUser(c *fiber.Ctx) error {
 				})
 			}
 		} else {
+			if club.IsExternal {
+				tx.Rollback()
+				return fiber.NewError(403, "External club registration requires an administrator")
+			}
 			// Club exists, check if it already has a manager
 			var existingManager models.User
 			if err := tx.Where("club_id = ? AND role = ?", club.ID, models.ClubManager).First(&existingManager).Error; err == nil {
