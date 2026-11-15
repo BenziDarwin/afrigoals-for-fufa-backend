@@ -115,7 +115,7 @@ func SetupRoutes(app *fiber.App) {
 	}
 
 	// ========================================
-	// LEAGUE ROUTES
+	// LEAGUE ROUTE
 	// ========================================
 	leagues := api.Group("/leagues")
 	{
