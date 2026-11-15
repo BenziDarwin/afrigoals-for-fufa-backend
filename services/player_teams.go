@@ -251,5 +251,5 @@ func loadNationalRoster(db *gorm.DB, club *models.Club, user *models.User) error
 		return err
 	}
 	projectSquad(club.Players, club.ID)
-	return nil
+	return attachNationalCallups(db, club.ID, club.Players)
 }

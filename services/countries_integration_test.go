@@ -54,6 +54,15 @@ func TestCountryDirectoryAndOverseasPlayerLifecycle(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if !tx.Migrator().HasTable(&models.NationalCallup{}) {
+		migration, err := os.ReadFile("../migrations/000021_national_team_callups.up.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Exec(string(migration)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	national := models.Club{}
 	if err := tx.Where("team_type='national' AND country_code='UG'").Order("id").First(&national).Error; err != nil {
 		national = models.Club{Name: "Country test national " + uuid.NewString(), TeamType: "national", Country: "Uganda"}
@@ -168,4 +177,6 @@ func TestCountryDirectoryAndOverseasPlayerLifecycle(t *testing.T) {
 	if response.StatusCode != 200 || !found {
 		t.Fatal("Overseas player disappeared from the national manager's roster")
 	}
+	t.Run("national_callups", func(t *testing.T) { exerciseNationalCallups(t, tx, app, &actor, national, player, domestic) })
+
 }

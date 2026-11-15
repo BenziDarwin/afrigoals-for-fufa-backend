@@ -32,7 +32,7 @@ func GetMatchRosterPlayers(c *fiber.Ctx) error {
 	var players []models.Player
 	if err := database.DB.
 		Preload("Club").Preload("NationalTeam").
-		Where("(club_id IN ? OR national_team_id IN ?)", []uint{match.HomeClubID, match.AwayClubID}, []uint{match.HomeClubID, match.AwayClubID}).
+		Scopes(func(db *gorm.DB) *gorm.DB { return matchRosterPlayers(db, match) }).
 		Order("club_id ASC, jersey_number ASC, name ASC").
 		Find(&players).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list match roster players"})
@@ -322,7 +322,7 @@ func computeTeamPerformanceSummaries(matchID uint) (*teamPerformanceReportPayloa
 	var players []models.Player
 	if err := database.DB.
 		Preload("Club").Preload("NationalTeam").
-		Where("(club_id IN ? OR national_team_id IN ?)", []uint{match.HomeClubID, match.AwayClubID}, []uint{match.HomeClubID, match.AwayClubID}).
+		Scopes(func(db *gorm.DB) *gorm.DB { return matchRosterPlayers(db, match) }).
 		Find(&players).Error; err != nil {
 		return nil, err
 	}

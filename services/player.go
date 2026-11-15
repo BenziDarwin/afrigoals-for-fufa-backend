@@ -56,6 +56,8 @@ func GetPlayerByID(c *fiber.Ctx) error {
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
 			"national_jersey_number": player.NationalJerseyNumber,
+			"called_up":              player.CalledUp,
+			"called_up_at":           player.CalledUpAt,
 			"club":                   player.Club,
 			"stats":                  player.Stats,
 		},
@@ -96,6 +98,8 @@ func GetPlayerByUUID(c *fiber.Ctx) error {
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
 			"national_jersey_number": player.NationalJerseyNumber,
+			"called_up":              player.CalledUp,
+			"called_up_at":           player.CalledUpAt,
 			"club":                   player.Club,
 			"stats":                  player.Stats,
 		},
@@ -172,6 +176,8 @@ func ListPlayers(c *fiber.Ctx) error {
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
 			"national_jersey_number": player.NationalJerseyNumber,
+			"called_up":              player.CalledUp,
+			"called_up_at":           player.CalledUpAt,
 			"created_at":             player.CreatedAt,
 			"updated_at":             player.UpdatedAt,
 			"club":                   player.Club,
@@ -321,6 +327,8 @@ func CreatePlayer(c *fiber.Ctx) error {
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
 			"national_jersey_number": player.NationalJerseyNumber,
+			"called_up":              player.CalledUp,
+			"called_up_at":           player.CalledUpAt,
 			"club":                   player.Club,
 		},
 	})
@@ -503,6 +511,8 @@ func UpdatePlayer(c *fiber.Ctx) error {
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
 			"national_jersey_number": player.NationalJerseyNumber,
+			"called_up":              player.CalledUp,
+			"called_up_at":           player.CalledUpAt,
 			"club":                   player.Club,
 		},
 	})
@@ -577,6 +587,15 @@ func GetPlayersByClub(c *fiber.Ctx) error {
 
 	teamID, _ := strconv.ParseUint(clubID, 10, 32)
 	projectSquad(players, uint(teamID))
+	var squadTeam models.Club
+	if err := database.DB.First(&squadTeam, uint(teamID)).Error; err != nil {
+		return fiber.ErrNotFound
+	}
+	if nationalTeam(squadTeam) {
+		if err := attachNationalCallups(database.DB, uint(teamID), players); err != nil {
+			return fiber.NewError(500, "Could not load call-up selections")
+		}
+	}
 	playerList := make([]fiber.Map, len(players))
 	for i, player := range players {
 		playerList[i] = fiber.Map{
@@ -591,6 +610,8 @@ func GetPlayersByClub(c *fiber.Ctx) error {
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
 			"national_jersey_number": player.NationalJerseyNumber,
+			"called_up":              player.CalledUp,
+			"called_up_at":           player.CalledUpAt,
 			"stats":                  player.Stats,
 			"created_at":             player.CreatedAt,
 		}
@@ -627,6 +648,8 @@ func GetPlayersByPosition(c *fiber.Ctx) error {
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
 			"national_jersey_number": player.NationalJerseyNumber,
+			"called_up":              player.CalledUp,
+			"called_up_at":           player.CalledUpAt,
 			"club":                   player.Club,
 			"created_at":             player.CreatedAt,
 		}
@@ -663,6 +686,8 @@ func GetPlayersByNationality(c *fiber.Ctx) error {
 			"national_team_id":       player.NationalTeamID,
 			"national_team":          player.NationalTeam,
 			"national_jersey_number": player.NationalJerseyNumber,
+			"called_up":              player.CalledUp,
+			"called_up_at":           player.CalledUpAt,
 			"club":                   player.Club,
 			"created_at":             player.CreatedAt,
 		}
@@ -825,6 +850,8 @@ func GetPlayerStatistics(c *fiber.Ctx) error {
 		"national_team_id":       player.NationalTeamID,
 		"national_team":          player.NationalTeam,
 		"national_jersey_number": player.NationalJerseyNumber,
+		"called_up":              player.CalledUp,
+		"called_up_at":           player.CalledUpAt,
 		"club_name":              player.Club.Name,
 		"stats":                  player.Stats,
 	})

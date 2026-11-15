@@ -157,6 +157,7 @@ func SetupRoutes(app *fiber.App) {
 		clubManagerRoutes.Use(middleware.ClubManagerOrAbove())
 		{
 			clubManagerRoutes.Post("/create-player", services.CreateAndAssignPlayerToClub)
+			clubManagerRoutes.Put("/:club_id/call-ups/:player_id", services.SetNationalCallup)
 		}
 
 		moderatorClubs := clubs.Group("")

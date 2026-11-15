@@ -158,9 +158,9 @@ func ListFormations(c *fiber.Ctx) error {
 // CreateFormation creates a new formation with lineup + substitutes + unavailable
 func CreateFormation(c *fiber.Ctx) error {
 	var req struct {
-		MatchID      uint   `json:"match_id"`
-		ClubID       uint   `json:"club_id"`
-		Formation    string `json:"formation"`
+		MatchID   uint   `json:"match_id"`
+		ClubID    uint   `json:"club_id"`
+		Formation string `json:"formation"`
 
 		Lineup []struct {
 			PlayerID     uint    `json:"player_id"`
@@ -202,6 +202,19 @@ func CreateFormation(c *fiber.Ctx) error {
 
 	// Use a transaction so partial writes don't happen
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		ids := []uint{}
+		for _, player := range req.Lineup {
+			ids = append(ids, player.PlayerID)
+		}
+		for _, player := range req.Substitutes {
+			ids = append(ids, player.PlayerID)
+		}
+		for _, player := range req.Unavailable {
+			ids = append(ids, player.PlayerID)
+		}
+		if err := validateNationalFormation(c, tx, req.ClubID, req.MatchID, ids); err != nil {
+			return err
+		}
 		if err := tx.Create(&formation).Error; err != nil {
 			return err
 		}
@@ -254,6 +267,10 @@ func CreateFormation(c *fiber.Ctx) error {
 
 		return nil
 	}); err != nil {
+		var validation *fiber.Error
+		if errors.As(err, &validation) {
+			return validation
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to create formation"})
 	}
 
@@ -265,11 +282,10 @@ func CreateFormation(c *fiber.Ctx) error {
 		First(&formation, formation.ID)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"message": "Formation created successfully",
+		"message":   "Formation created successfully",
 		"formation": formation, // includes lineup/substitutes/unavailable via json tags
 	})
 }
-
 
 // UpdateFormation updates a formation's information
 func UpdateFormation(c *fiber.Ctx) error {
@@ -321,6 +337,41 @@ func UpdateFormation(c *fiber.Ctx) error {
 	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var current models.Formation
+		if err := tx.Preload("Lineup").Preload("Substitutes").Preload("Unavailable").First(&current, formation.ID).Error; err != nil {
+			return err
+		}
+		ids := []uint{}
+		if req.Lineup != nil {
+			for _, player := range *req.Lineup {
+				ids = append(ids, player.PlayerID)
+			}
+		} else {
+			for _, player := range current.Lineup {
+				ids = append(ids, player.PlayerID)
+			}
+		}
+		if req.Substitutes != nil {
+			for _, player := range *req.Substitutes {
+				ids = append(ids, player.PlayerID)
+			}
+		} else {
+			for _, player := range current.Substitutes {
+				ids = append(ids, player.PlayerID)
+			}
+		}
+		if req.Unavailable != nil {
+			for _, player := range *req.Unavailable {
+				ids = append(ids, player.PlayerID)
+			}
+		} else {
+			for _, player := range current.Unavailable {
+				ids = append(ids, player.PlayerID)
+			}
+		}
+		if err := validateNationalFormation(c, tx, formation.ClubID, formation.MatchID, ids); err != nil {
+			return err
+		}
 		// formation type
 		if req.Formation != nil {
 			if err := tx.Model(&formation).Updates(map[string]interface{}{
@@ -393,6 +444,10 @@ func UpdateFormation(c *fiber.Ctx) error {
 
 		return nil
 	}); err != nil {
+		var validation *fiber.Error
+		if errors.As(err, &validation) {
+			return validation
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update formation"})
 	}
 
@@ -407,7 +462,6 @@ func UpdateFormation(c *fiber.Ctx) error {
 		"formation": formation,
 	})
 }
-
 
 // DeleteFormation soft deletes a formation and its lineup
 func DeleteFormation(c *fiber.Ctx) error {
