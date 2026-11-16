@@ -62,6 +62,7 @@ func ConnectDB() *gorm.DB {
 		&models.UnavailablePlayer{}, // FK to Formation & Player
 		&models.MatchEvent{},        // FK to Match (and optionally Player & Club)
 		&models.Clip{},
+		&models.TeamMatchReport{},
 		&models.MatchReportReview{}, // FK to Match (loose reference, no association)
 
 		// The match_analysts join table is created by Match.Analysts (many2many),

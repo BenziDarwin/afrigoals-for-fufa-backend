@@ -193,8 +193,8 @@ func buildScoringPrediction(score, pct float64, likely bool, sample int, ids []u
 func computePossessionLevels(ownEvents, opponentEvents []models.AnalysisEvent) possessionLevels {
 	ownCounts := possessionZoneCounts(ownEvents)
 	opponentCounts := possessionZoneCounts(opponentEvents)
-	totalOwn := ownCounts["defensive_third"] + ownCounts["middle_third"] + ownCounts["attacking_third"]
-	totalOpponent := opponentCounts["defensive_third"] + opponentCounts["middle_third"] + opponentCounts["attacking_third"]
+	totalOwn := len(ownEvents)
+	totalOpponent := len(opponentEvents)
 	total := totalOwn + totalOpponent
 
 	return possessionLevels{
@@ -203,7 +203,7 @@ func computePossessionLevels(ownEvents, opponentEvents []models.AnalysisEvent) p
 		AttackingThird: possessionLevelFor("attacking_third", "Attacking third", ownCounts, opponentCounts),
 		OverallPct:     sharePct(totalOwn, total),
 		SampleSize:     totalOwn,
-		Notes:          "Event-based possession proxy from attributed, zone-tagged events; not clock-time possession.",
+		Notes:          "Overall possession estimates each team's share of all attributed events, matching the possession pie chart. Pitch-third shares use zone-tagged events.",
 	}
 }
 

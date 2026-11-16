@@ -52,3 +52,22 @@ func TestComputePossessionLevels_ComputesEventBasedSharesByThird(t *testing.T) {
 		t.Fatalf("expected sample size 3, got %d", possession.SampleSize)
 	}
 }
+
+func TestPossessionOverallIncludesEventsWithoutZones(t *testing.T) {
+	own := []models.AnalysisEvent{{ID: 1, PitchZone: strPtr("att-left")}, {ID: 2}, {ID: 3, PitchZone: strPtr("unknown")}}
+	away := []models.AnalysisEvent{{ID: 4, PitchZone: strPtr("att-right")}, {ID: 5}}
+	result := computePossessionLevels(own, away)
+	if result.OverallPct != 60 || result.SampleSize != 3 {
+		t.Fatalf("overall must match 3/5 of the pie, got %+v", result)
+	}
+	if result.AttackingThird.SharePct != 50 {
+		t.Fatalf("third share must use the two zone-tagged events, got %+v", result)
+	}
+	reverse := computePossessionLevels(away, own)
+	if reverse.OverallPct != 40 {
+		t.Fatalf("expected opponent share 40, got %v", reverse.OverallPct)
+	}
+	if empty := computePossessionLevels(nil, nil); empty.OverallPct != 0 {
+		t.Fatal("empty possession must be zero")
+	}
+}

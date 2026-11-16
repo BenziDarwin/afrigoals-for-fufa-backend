@@ -54,6 +54,10 @@ func ListPlayerAnalysisReports(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid match ID"})
 	}
 
+	allowed, err := reportPlayerAccess(c, uint(matchID))
+	if err != nil {
+		return err
+	}
 	var reports []models.PlayerAnalysisReport
 	if err := database.DB.
 		Where("match_id = ?", uint(matchID)).
@@ -62,6 +66,13 @@ func ListPlayerAnalysisReports(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to list player analysis reports"})
 	}
 
+	filtered := []models.PlayerAnalysisReport{}
+	for _, report := range reports {
+		if allowed[report.PlayerID] {
+			filtered = append(filtered, report)
+		}
+	}
+	reports = filtered
 	return c.JSON(fiber.Map{
 		"success": true,
 		"data": fiber.Map{
@@ -213,6 +224,13 @@ func DownloadPlayerAnalysisReportPDF(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Database error"})
 	}
 
+	allowed, err := reportPlayerAccess(c, uint(matchID))
+	if err != nil {
+		return err
+	}
+	if !allowed[report.PlayerID] {
+		return fiber.ErrForbidden
+	}
 	pdf := buildPlayerReportPDF(report)
 	filename := fmt.Sprintf("player_report_match_%d_player_%d.pdf", report.MatchID, report.PlayerID)
 
@@ -235,6 +253,9 @@ func DownloadTeamPerformanceReportPDF(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "Match not found"})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Database error"})
+	}
+	if err := scopeTeamPerformancePayload(c, payload); err != nil {
+		return err
 	}
 	if payload.TotalReports == 0 {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "No player analysis reports found for this match"})
@@ -352,7 +373,7 @@ func computeTeamPerformanceSummaries(matchID uint) (*teamPerformanceReportPayloa
 	for _, e := range events {
 		pid := uintOrZero(e.PlayerID)
 		eventPlayer[e.ID] = pid
-		if clubID, ok := playerClub[pid]; ok {
+		if clubID, ok := resolveEventClub(e, playerClub); ok {
 			eventClub[e.ID] = clubID
 		}
 	}
@@ -401,7 +422,6 @@ func computeTeamPerformanceSummaries(matchID uint) (*teamPerformanceReportPayloa
 		}
 		team := ensureTeam(clubID, "Unknown team", clubID == match.HomeClubID)
 		team.Reports++
-		team.Events += report.EventCount
 		team.Score += report.Score
 		if report.Score > team.TopPlayerScore {
 			team.TopPlayer = report.PlayerName
@@ -425,6 +445,7 @@ func computeTeamPerformanceSummaries(matchID uint) (*teamPerformanceReportPayloa
 		if team == nil {
 			continue
 		}
+		team.Events++
 		team.EventTypeCounts[e.Type]++
 		if e.PitchZone != nil && strings.TrimSpace(*e.PitchZone) != "" {
 			team.ZoneFrequency[strings.TrimSpace(*e.PitchZone)]++

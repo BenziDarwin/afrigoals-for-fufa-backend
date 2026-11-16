@@ -81,7 +81,7 @@ func AskMatchAssistant(c *fiber.Ctx) error {
 		})
 	}
 
-	matchContext, err := buildCoachAssistantContext(c.Context(), uint(matchID))
+	matchContext, err := buildCoachAssistantContext(c.Context(), uint(matchID), user)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error":   "Failed to load match data",
@@ -138,22 +138,26 @@ func AskMatchAssistant(c *fiber.Ctx) error {
 }
 
 // ListMatchAIInsights: GET /api/v1/analyst-matches/:match_id/ai-assistant/insights
-// Returns every AI-answered question saved for this match, oldest first, so
-// the report page can show the assistant's saved analysis to anyone who
-// later views the report - not just the browser session that asked it.
+// Analysts and administrators can review all saved answers. Team and league
+// viewers receive their own answers, grounded in their permitted team data.
 func ListMatchAIInsights(c *fiber.Ctx) error {
 	matchID, err := strconv.ParseUint(c.Params("match_id"), 10, 32)
 	if err != nil || matchID == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Invalid match ID"})
 	}
 
-	if _, _, accessErr := loadMatchForAssistantAccess(c, uint(matchID)); accessErr != nil {
+	user, _, accessErr := loadMatchForAssistantAccess(c, uint(matchID))
+	if accessErr != nil {
 		return accessErr
 	}
 
 	var insights []models.MatchAIInsight
-	if err := database.DB.
-		Where("match_id = ?", matchID).
+	query := database.DB.Where("match_id = ?", matchID)
+	if user.Role != models.DataAnalyst && user.Role != models.AfrigoalsAdmin {
+		query = query.Where("asked_by = ?", user.ID)
+	}
+	c.Set("Cache-Control", "private, no-store")
+	if err := query.
 		Order("created_at ASC").
 		Find(&insights).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Database error"})
@@ -212,7 +216,7 @@ func matchAssistantSystemPrompt(matchContext string) string {
 // assistant's answers about who performed better and how to create more
 // goal-scoring chances stay grounded in the same numbers the coach/analyst
 // already sees there, not a separate, looser summary.
-func buildCoachAssistantContext(ctx context.Context, matchID uint) (string, error) {
+func buildCoachAssistantContext(ctx context.Context, matchID uint, viewer *models.User) (string, error) {
 	inputs, err := loadMatchPerformanceInputs(ctx, matchID)
 	if err != nil {
 		return "", err
@@ -286,12 +290,20 @@ func buildCoachAssistantContext(ctx context.Context, matchID uint) (string, erro
 		b.WriteString("\n")
 	}
 
-	writeTeam(inputs.Match.HomeClub.Name, "Home", homeBundle, homeScoring, homePossession, homeStrengths, homeWeaknesses)
-	writeTeam(inputs.Match.AwayClub.Name, "Away", awayBundle, awayScoring, awayPossession, awayStrengths, awayWeaknesses)
+	visible := func(clubID uint) bool { return canReadTeamReport(viewer, clubID) }
+	if visible(inputs.Match.HomeClubID) {
+		writeTeam(inputs.Match.HomeClub.Name, "Home", homeBundle, homeScoring, homePossession, homeStrengths, homeWeaknesses)
+	}
+	if visible(inputs.Match.AwayClubID) {
+		writeTeam(inputs.Match.AwayClub.Name, "Away", awayBundle, awayScoring, awayPossession, awayStrengths, awayWeaknesses)
+	}
 
 	if len(playerReports) > 0 {
 		b.WriteString("Player performance (headline metrics are only comparable within the same position group):\n")
 		for _, p := range playerReports {
+			if !visible(p.ClubID) {
+				continue
+			}
 			var parts []string
 			for _, m := range p.HeadlineMetrics {
 				if m.Value == nil {

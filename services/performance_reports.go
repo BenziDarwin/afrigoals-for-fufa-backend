@@ -187,6 +187,22 @@ func GetMatchPerformanceReport(c *fiber.Ctx) error {
 	}
 
 	playerReports := buildPlayerPerformanceReports(inputs.Players, inputs.Events, inputs.Stats, inputs.ClipEventIDs)
+	visibleTeams := []teamPerformanceIntelligence{}
+	for _, team := range teams {
+		if canReadTeamReport(user, team.ClubID) {
+			visibleTeams = append(visibleTeams, team)
+		}
+	}
+	teams = visibleTeams
+	visiblePlayers := playerReports[:0]
+	for _, report := range playerReports {
+		if canReadTeamReport(user, report.ClubID) {
+			visiblePlayers = append(visiblePlayers, report)
+		}
+	}
+	playerReports = visiblePlayers
+	c.Set("Cache-Control", "private, no-store")
+
 	dataQuality := computeDataQuality(inputs.Events, inputs.Stats, inputs.ClipEventIDs, inputs.EventTypesByValue)
 
 	return c.JSON(fiber.Map{
@@ -240,6 +256,10 @@ func GetPlayerPerformanceReport(c *fiber.Ctx) error {
 	reports := buildPlayerPerformanceReports(inputs.Players, inputs.Events, inputs.Stats, inputs.ClipEventIDs)
 	for _, r := range reports {
 		if r.PlayerID == uint(playerID) {
+			if !canReadTeamReport(user, r.ClubID) {
+				return fiber.ErrForbidden
+			}
+			c.Set("Cache-Control", "private, no-store")
 			return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"player_report": r}})
 		}
 	}

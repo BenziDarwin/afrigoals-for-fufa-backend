@@ -3,6 +3,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 )
 
 func ListAnalysisEvents(c *fiber.Ctx) error {
+	c.Set("Cache-Control", "private, no-store")
 	matchID := c.Params("match_id")
 
 	var events []models.AnalysisEvent
@@ -130,6 +132,7 @@ func ListEventTypes(c *fiber.Ctx) error {
 }
 
 func GetAnalysisEventByID(c *fiber.Ctx) error {
+	c.Set("Cache-Control", "private, no-store")
 	matchID := c.Params("match_id")
 	eventID := c.Params("id")
 
@@ -305,18 +308,18 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Type              *string  `json:"type"`
-		EventTypeID       *uint    `json:"event_type_id"`
-		TimestampSeconds  *float64 `json:"timestamp_seconds"`
-		TeamID            *uint    `json:"team_id"`
-		PlayerID          *uint    `json:"player_id"`
-		SecondaryPlayerID *uint    `json:"secondary_player_id"`
-		PlayerName        *string  `json:"player_name"`
-		PitchZone         *string  `json:"pitch_zone"`
-		Outcome           *string  `json:"outcome"`
-		ClipURL           *string  `json:"clip_url"`
-		Notes             *string  `json:"notes"`
-		ConfidenceScore   *float64 `json:"confidence_score"`
+		Type              *string         `json:"type"`
+		EventTypeID       *uint           `json:"event_type_id"`
+		TimestampSeconds  *float64        `json:"timestamp_seconds"`
+		TeamID            *uint           `json:"team_id"`
+		PlayerID          json.RawMessage `json:"player_id"`
+		SecondaryPlayerID *uint           `json:"secondary_player_id"`
+		PlayerName        *string         `json:"player_name"`
+		PitchZone         *string         `json:"pitch_zone"`
+		Outcome           *string         `json:"outcome"`
+		ClipURL           *string         `json:"clip_url"`
+		Notes             *string         `json:"notes"`
+		ConfidenceScore   *float64        `json:"confidence_score"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -346,8 +349,12 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 		event.TeamID = req.TeamID
 		updates["team_id"] = event.TeamID
 	}
-	if req.PlayerID != nil {
-		event.PlayerID = req.PlayerID
+	if len(req.PlayerID) > 0 {
+		var playerID *uint
+		if err := json.Unmarshal(req.PlayerID, &playerID); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "Invalid player ID")
+		}
+		event.PlayerID = playerID
 		updates["player_id"] = event.PlayerID
 	}
 	if req.SecondaryPlayerID != nil {
@@ -357,6 +364,10 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 	if req.PlayerName != nil {
 		event.PlayerName = req.PlayerName
 		updates["player_name"] = event.PlayerName
+	}
+	if len(req.PlayerID) > 0 && event.PlayerID == nil {
+		event.PlayerName = nil
+		updates["player_name"] = nil
 	}
 	if req.PitchZone != nil {
 		event.PitchZone = req.PitchZone
@@ -386,7 +397,22 @@ func UpdateAnalysisEvent(c *fiber.Ctx) error {
 	}
 
 	if len(updates) > 0 {
-		if err := database.DB.Model(&event).Updates(updates).Error; err != nil {
+		if err := database.DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&event).Updates(updates).Error; err != nil {
+				return err
+			}
+			// Keep statistics attribution consistent with the edited event.
+			attribution := map[string]any{}
+			for _, field := range []string{"player_id", "player_name"} {
+				if value, supplied := updates[field]; supplied {
+					attribution[field] = value
+				}
+			}
+			if len(attribution) > 0 {
+				return tx.Model(&models.AnalysisEventStats{}).Where("analysis_event_id = ?", event.ID).Updates(attribution).Error
+			}
+			return nil
+		}); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error":   "Failed to update analysis event",
 				"details": err.Error(),

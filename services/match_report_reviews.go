@@ -62,6 +62,9 @@ func GetMatchReportReview(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Database error"})
 	}
 
+	if err := scopeTeamPerformancePayload(c, payload); err != nil {
+		return err
+	}
 	review, err := getOrCreateMatchReportReview(uint(matchID))
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to load report review"})

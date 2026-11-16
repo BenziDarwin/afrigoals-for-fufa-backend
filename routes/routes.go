@@ -136,6 +136,7 @@ func SetupRoutes(app *fiber.App) {
 			adminLeagues.Post("/add-club", services.AddClubToLeague)
 			adminLeagues.Post("/remove-club", services.RemoveClubFromLeague)
 			adminLeagues.Get("/:league_id/report-queue", services.ListLeagueReportQueue)
+			adminLeagues.Get("/:league_id/team-reports", services.ListLeagueTeamReports)
 		}
 	}
 
@@ -386,9 +387,9 @@ func SetupRoutes(app *fiber.App) {
 		analystMatches.Get("/clips", services.ListMatchClips)
 		analystMatches.Get("/players", services.GetMatchRosterPlayers)
 		analystMatches.Get("/event-types", getCache, services.ListEventTypes)
-		analystMatches.Get("/analysis-events", getCache, services.ListAnalysisEvents)
-		analystMatches.Get("/analysis-events/:id", getCache, services.GetAnalysisEventByID)
-		analystMatches.Get("/player-reports", getCache, services.ListPlayerAnalysisReports)
+		analystMatches.Get("/analysis-events", services.ListAnalysisEvents)
+		analystMatches.Get("/analysis-events/:id", services.GetAnalysisEventByID)
+		analystMatches.Get("/player-reports", services.ListPlayerAnalysisReports)
 		analystMatches.Get("/player-reports/:report_id/pdf", services.DownloadPlayerAnalysisReportPDF)
 		analystMatches.Get("/team-performance/pdf", services.DownloadTeamPerformanceReportPDF)
 
@@ -396,6 +397,9 @@ func SetupRoutes(app *fiber.App) {
 		// right after approving/distributing, and getCache has no
 		// invalidation hook to bust on write.
 		analystMatches.Get("/report-review", services.GetMatchReportReview)
+		analystMatches.Get("/team-reports", services.ListTeamMatchReports)
+		analystMatches.Put("/team-reports/:club_id", middleware.DataAnalystOrAbove(), services.SaveTeamMatchReport)
+		analystMatches.Post("/team-reports/:club_id/status", services.ChangeTeamMatchReportStatus)
 
 		// NEW: Club Performance Intelligence - Phase 1 post-match report.
 		// Not wrapped in getCache for the same reason as report-review: an
